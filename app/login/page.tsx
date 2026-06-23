@@ -3,7 +3,7 @@
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
-import { LogIn, UserPlus, Users, ShieldAlert, Sparkles } from 'lucide-react';
+import { LogIn, UserPlus, Users, ShieldAlert } from 'lucide-react';
 
 export default function LoginPage() {
   const [activeTab, setActiveTab] = useState<'login' | 'register'>('login');
@@ -191,22 +191,6 @@ export default function LoginPage() {
                 )}
               </button>
             </form>
-
-            {/* Test Credentials Seed Banner */}
-            {activeTab === 'login' && (
-              <div className="mt-8 pt-6 border-t border-white/5 flex flex-col gap-2 bg-[#5e61dc]/5 p-4 rounded-2xl border border-[#5e61dc]/10 text-xs text-brand-300">
-                <div className="flex items-center gap-1.5 font-bold uppercase tracking-wider">
-                  <Sparkles className="w-3.5 h-3.5" /> Testing Credentials
-                </div>
-                <div>
-                  Use these seeded credentials for demo purposes:
-                  <div className="mt-2 font-mono space-y-0.5 text-gray-400">
-                    <div>Email: <span className="text-white">staff@queue.com</span></div>
-                    <div>Pass: <span className="text-white">password123</span></div>
-                  </div>
-                </div>
-              </div>
-            )}
           </div>
         </div>
 

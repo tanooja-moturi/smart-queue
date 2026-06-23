@@ -18,7 +18,7 @@ export async function POST(
     const { data: queue, error: queueError } = await supabaseAdmin
       .from('queues')
       .select('*')
-      .eq('queue_code', code.toLowerCase())
+      .ilike('queue_code', code)
       .maybeSingle();
 
     if (queueError || !queue) {

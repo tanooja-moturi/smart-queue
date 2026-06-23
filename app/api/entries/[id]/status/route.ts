@@ -30,6 +30,21 @@ export async function PATCH(
       return NextResponse.json({ message: 'Queue entry not found' }, { status: 404 });
     }
 
+    // Verify queue ownership
+    const { data: queue, error: queueError } = await supabaseAdmin
+      .from('queues')
+      .select('user_id')
+      .eq('id', entry.queue_id)
+      .maybeSingle();
+
+    if (queueError || !queue) {
+      return NextResponse.json({ message: 'Queue not found' }, { status: 404 });
+    }
+
+    if (queue.user_id !== user._id) {
+      return NextResponse.json({ message: 'Unauthorized' }, { status: 403 });
+    }
+
     const updateFields: any = { status };
     if (status === 'called') {
       updateFields.called_at = new Date().toISOString();

@@ -21,7 +21,7 @@ export async function GET(
         const { data: foundQueue } = await supabaseAdmin
           .from('queues')
           .select('id')
-          .eq('queue_code', queue.toLowerCase())
+          .ilike('queue_code', queue)
           .maybeSingle();
         if (foundQueue) {
           resolvedQueueId = foundQueue.id;

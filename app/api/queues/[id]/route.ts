@@ -17,12 +17,16 @@ export async function DELETE(
 
     const { data: queue } = await supabaseAdmin
       .from('queues')
-      .select('id')
+      .select('id, user_id')
       .eq('id', id)
       .maybeSingle();
 
     if (!queue) {
       return NextResponse.json({ message: 'Queue not found' }, { status: 404 });
+    }
+
+    if (queue.user_id !== user._id) {
+      return NextResponse.json({ message: 'Unauthorized' }, { status: 403 });
     }
 
     // Cascade delete: delete queue entries first, then delete queue itself

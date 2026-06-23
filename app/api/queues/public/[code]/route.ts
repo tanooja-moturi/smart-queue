@@ -12,7 +12,7 @@ export async function GET(
     const { data: queue, error: dbError } = await supabaseAdmin
       .from('queues')
       .select('*')
-      .eq('queue_code', code.toLowerCase())
+      .ilike('queue_code', code)
       .maybeSingle();
 
     if (dbError || !queue) {

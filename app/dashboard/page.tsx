@@ -59,7 +59,6 @@ export default function DashboardPage() {
   // Modal states
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [newQueueName, setNewQueueName] = useState('');
-  const [newQueueCode, setNewQueueCode] = useState('');
   const [newServiceTime, setNewServiceTime] = useState(5);
   const [modalError, setModalError] = useState<string | null>(null);
   
@@ -138,7 +137,6 @@ export default function DashboardPage() {
     try {
       const created = await apiRequest('/queues', 'POST', {
         queueName: newQueueName,
-        queueCode: newQueueCode,
         averageServiceTime: newServiceTime,
       });
 
@@ -146,7 +144,6 @@ export default function DashboardPage() {
       setSelectedQueue(created);
       setIsModalOpen(false);
       setNewQueueName('');
-      setNewQueueCode('');
       setNewServiceTime(5);
     } catch (err: any) {
       setModalError(err.message || 'Failed to create queue');
@@ -636,26 +633,8 @@ export default function DashboardPage() {
                   required
                   placeholder="e.g. General Banking"
                   value={newQueueName}
-                  onChange={(e) => {
-                    setNewQueueName(e.target.value);
-                    // Generate a default code slug
-                    setNewQueueCode(e.target.value.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, ''));
-                  }}
+                  onChange={(e) => setNewQueueName(e.target.value)}
                   className="w-full bg-white/5 border border-white/10 focus:border-brand-500 rounded-xl px-4 py-2.5 text-white placeholder-gray-600 outline-none text-sm transition"
-                />
-              </div>
-
-              <div>
-                <label className="block text-gray-400 text-xs font-semibold uppercase tracking-wider mb-2">
-                  Queue Code (URL slug)
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. general-banking"
-                  value={newQueueCode}
-                  onChange={(e) => setNewQueueCode(e.target.value.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, ''))}
-                  className="w-full bg-white/5 border border-white/10 focus:border-brand-500 rounded-xl px-4 py-2.5 text-white placeholder-gray-600 outline-none text-sm transition font-mono"
                 />
               </div>
 

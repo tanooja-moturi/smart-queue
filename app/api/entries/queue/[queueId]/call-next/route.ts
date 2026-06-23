@@ -15,6 +15,21 @@ export async function POST(
 
     const { queueId } = await params;
 
+    // Verify queue ownership
+    const { data: queue, error: queueError } = await supabaseAdmin
+      .from('queues')
+      .select('user_id')
+      .eq('id', queueId)
+      .maybeSingle();
+
+    if (queueError || !queue) {
+      return NextResponse.json({ message: 'Queue not found' }, { status: 404 });
+    }
+
+    if (queue.user_id !== user._id) {
+      return NextResponse.json({ message: 'Unauthorized' }, { status: 403 });
+    }
+
     // 1. Mark any currently 'called' customer as 'served'
     await supabaseAdmin
       .from('queue_entries')
