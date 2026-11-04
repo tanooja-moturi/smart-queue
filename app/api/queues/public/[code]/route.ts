@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabaseAdmin';
+import { adminDb } from '@/lib/firebaseAdmin';
 
 // GET /api/queues/public/:code — public, no auth required
 export async function GET(
@@ -8,43 +8,50 @@ export async function GET(
 ) {
   try {
     const { code } = await params;
+    const cleanCode = code ? code.trim().toUpperCase() : '';
 
-    const { data: queue, error: dbError } = await supabaseAdmin
-      .from('queues')
-      .select('*')
-      .ilike('queue_code', code)
-      .maybeSingle();
+    if (!cleanCode) {
+      return NextResponse.json({ message: 'Queue code is required' }, { status: 400 });
+    }
 
-    if (dbError || !queue) {
+    const querySnapshot = await adminDb
+      .collection('queues')
+      .where('queueCode', '==', cleanCode)
+      .limit(1)
+      .get();
+
+    if (querySnapshot.empty) {
       return NextResponse.json({ message: 'Queue not found' }, { status: 404 });
     }
 
-    const { count: waitingCount } = await supabaseAdmin
-      .from('queue_entries')
-      .select('*', { count: 'exact', head: true })
-      .eq('queue_id', queue.id)
-      .eq('status', 'waiting');
+    const queueDoc = querySnapshot.docs[0];
+    const queue = queueDoc.data();
+    const entriesRef = queueDoc.ref.collection('entries');
 
-    const { data: currentServingEntry } = await supabaseAdmin
-      .from('queue_entries')
-      .select('token')
-      .eq('queue_id', queue.id)
-      .eq('status', 'called')
-      .order('called_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    const [waitingSnapshot, calledSnapshot] = await Promise.all([
+      entriesRef.where('status', '==', 'waiting').count().get(),
+      entriesRef.where('status', '==', 'called').limit(1).get(),
+    ]);
+    const waitingCount = waitingSnapshot.data().count;
+    const currentServingEntry = !calledSnapshot.empty ? calledSnapshot.docs[0].data() : null;
 
     return NextResponse.json({
-      _id: queue.id.toString(),
-      queueName: queue.queue_name,
-      queueCode: queue.queue_code,
-      averageServiceTime: queue.average_service_time,
-      tokenPrefix: queue.token_prefix,
-      lastTokenNumber: queue.last_token_number,
+      _id: queueDoc.id,
+      queueName: queue.queueName,
+      queueCode: queue.queueCode,
+      averageServiceTime: queue.averageServiceTime,
+      tokenPrefix: queue.tokenPrefix,
+      lastTokenNumber: queue.lastTokenNumber || 0,
       waitingCount: waitingCount || 0,
       currentServing: currentServingEntry ? currentServingEntry.token : 'None',
+      // Config fields for saved-queue / remote-join decisions
+      isOpen: queue.isOpen !== false,
+      remoteJoiningEnabled: queue.remoteJoiningEnabled === true,
+      qrVersion: queue.qrVersion || 1,
+      publicCredential: queue.publicCredential || '',
     });
-  } catch (error) {
-    return NextResponse.json({ message: (error as Error).message }, { status: 500 });
+  } catch (error: any) {
+    console.error('[GET /api/queues/public/[code]] Error:', error);
+    return NextResponse.json({ message: error?.message || 'Error retrieving queue' }, { status: 500 });
   }
 }

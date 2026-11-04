@@ -3,3 +3,15 @@ node_modules
 .env.local
 .env*.local
 dist
+# TypeScript build cache
+*.tsbuildinfo
+
+# Firebase credentials
+serviceAccountKey.json
+firebase-adminsdk*.json
+*.pem
+
+# Environment files
+.env
+.env.*
+!.env.example

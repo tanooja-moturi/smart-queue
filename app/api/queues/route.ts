@@ -1,83 +1,78 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAuthUser } from '@/lib/authMiddleware';
-import { supabaseAdmin } from '@/lib/supabaseAdmin';
+import { requireStaffUser } from '@/lib/authMiddleware';
+import { adminDb } from '@/lib/firebaseAdmin';
+import { QueryDocumentSnapshot } from 'firebase-admin/firestore';
 
-// GET /api/queues — list all queues with stats (protected)
+// GET /api/queues — list all queues with stats (staff-only)
 export async function GET(req: NextRequest) {
   try {
-    const { user, error } = await getAuthUser(req);
+    const { user, error, status } = await requireStaffUser(req);
     if (error || !user) {
-      return NextResponse.json({ message: error || 'Not authorized' }, { status: 401 });
+      return NextResponse.json({ message: error || 'Not authorized' }, { status: status || 401 });
     }
 
-    const { data: queues, error: dbError } = await supabaseAdmin
-      .from('queues')
-      .select('*')
-      .eq('user_id', user._id)
-      .order('created_at', { ascending: false });
-
-    if (dbError || !queues) {
-      return NextResponse.json({ message: dbError?.message || 'Error fetching queues' }, { status: 500 });
-    }
+    const queuesSnapshot = await adminDb
+      .collection('queues')
+      .where('userId', '==', user._id)
+      .get();
 
     const queuesWithStats = await Promise.all(
-      queues.map(async (queue) => {
-        const { count: waitingCount } = await supabaseAdmin
-          .from('queue_entries')
-          .select('*', { count: 'exact', head: true })
-          .eq('queue_id', queue.id)
-          .eq('status', 'waiting');
+      queuesSnapshot.docs.map(async (doc: QueryDocumentSnapshot) => {
+        const queueData = doc.data();
+        const entriesRef = doc.ref.collection('entries');
 
-        const { count: servedCount } = await supabaseAdmin
-          .from('queue_entries')
-          .select('*', { count: 'exact', head: true })
-          .eq('queue_id', queue.id)
-          .eq('status', 'served');
-
-        const { data: activeEntry } = await supabaseAdmin
-          .from('queue_entries')
-          .select('token')
-          .eq('queue_id', queue.id)
-          .eq('status', 'called')
-          .order('called_at', { ascending: false })
-          .limit(1)
-          .maybeSingle();
+        const [waitingSnapshot, servedSnapshot, calledSnapshot] = await Promise.all([
+          entriesRef.where('status', '==', 'waiting').count().get(),
+          entriesRef.where('status', '==', 'served').count().get(),
+          entriesRef.where('status', '==', 'called').limit(1).get(),
+        ]);
+        const waitingCount = waitingSnapshot.data().count;
+        const servedCount = servedSnapshot.data().count;
+        const activeEntry = !calledSnapshot.empty ? calledSnapshot.docs[0].data() : null;
 
         return {
-          _id: queue.id.toString(),
-          queueName: queue.queue_name,
-          queueCode: queue.queue_code,
-          averageServiceTime: queue.average_service_time,
-          tokenPrefix: queue.token_prefix,
-          lastTokenNumber: queue.last_token_number,
+          _id: doc.id,
+          queueName: queueData.queueName,
+          queueCode: queueData.queueCode,
+          averageServiceTime: queueData.averageServiceTime,
+          tokenPrefix: queueData.tokenPrefix,
+          lastTokenNumber: queueData.lastTokenNumber || 0,
           waitingCount: waitingCount || 0,
           servedCount: servedCount || 0,
           currentServing: activeEntry ? activeEntry.token : 'None',
+          // Queue config fields
+          isOpen: queueData.isOpen !== false, // default true for backwards-compat
+          remoteJoiningEnabled: queueData.remoteJoiningEnabled === true,
+          qrVersion: queueData.qrVersion || 1,
+          publicCredential: queueData.publicCredential || '',
         };
       })
     );
 
+    queuesWithStats.sort((a: any, b: any) => (b._id > a._id ? 1 : -1));
     return NextResponse.json(queuesWithStats);
-  } catch (error) {
-    return NextResponse.json({ message: (error as Error).message }, { status: 500 });
+  } catch (error: any) {
+    console.error('[GET /api/queues] Error:', error);
+    return NextResponse.json({ message: error?.message || 'Error fetching queues' }, { status: 500 });
   }
 }
 
-// POST /api/queues — create a queue (protected)
+// POST /api/queues — create a queue (staff-only)
 export async function POST(req: NextRequest) {
   try {
-    const { user, error } = await getAuthUser(req);
+    const { user, error, status } = await requireStaffUser(req);
     if (error || !user) {
-      return NextResponse.json({ message: error || 'Not authorized' }, { status: 401 });
+      return NextResponse.json({ message: error || 'Not authorized' }, { status: status || 401 });
     }
 
-    const { queueName, averageServiceTime } = await req.json();
+    const body = await req.json();
+    const { queueName, averageServiceTime } = body;
 
     if (!queueName || !averageServiceTime) {
       return NextResponse.json({ message: 'All fields are required' }, { status: 400 });
     }
 
-    // Generate unique queue code (e.g. SHOP-A8F3)
+    // Generate unique queue code
     const cleanPrefix = queueName.trim().toUpperCase().replace(/[^A-Z0-9\s-]/g, '').replace(/[\s-]+/g, '-');
     const codePrefix = cleanPrefix || 'QUEUE';
     const suffixChars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
@@ -88,60 +83,61 @@ export async function POST(req: NextRequest) {
 
     while (!isUnique && attempts < 100) {
       attempts++;
-      const suffixLen = Math.floor(Math.random() * 3) + 4; // random length 4, 5, or 6
+      const suffixLen = Math.floor(Math.random() * 3) + 4;
       let suffix = '';
       for (let i = 0; i < suffixLen; i++) {
         suffix += suffixChars.charAt(Math.floor(Math.random() * suffixChars.length));
       }
       codeNormalized = `${codePrefix}-${suffix}`;
-
-      const { data: queueExists } = await supabaseAdmin
-        .from('queues')
-        .select('id')
-        .eq('queue_code', codeNormalized)
-        .maybeSingle();
-
-      if (!queueExists) {
-        isUnique = true;
-      }
+      const existing = await adminDb.collection('queues').where('queueCode', '==', codeNormalized).limit(1).get();
+      if (existing.empty) isUnique = true;
     }
 
     if (!isUnique) {
-      return NextResponse.json({ message: 'Could not generate a unique queue code. Please try again.' }, { status: 500 });
+      return NextResponse.json({ message: 'Could not generate a unique queue code.' }, { status: 500 });
     }
 
-    // Extract first character of the queue name as token prefix, fallback to 'A'
     let tokenPrefix = queueName.trim().charAt(0).toUpperCase();
-    if (!/^[A-Z]$/.test(tokenPrefix)) {
-      tokenPrefix = 'A';
-    }
+    if (!/^[A-Z]$/.test(tokenPrefix)) tokenPrefix = 'A';
 
-    const { data: queue, error: createError } = await supabaseAdmin
-      .from('queues')
-      .insert({
-        queue_name: queueName,
-        queue_code: codeNormalized,
-        average_service_time: Number(averageServiceTime),
-        token_prefix: tokenPrefix,
-        last_token_number: 0,
-        user_id: user._id,
-      })
-      .select('*')
-      .single();
+    // Generate initial public credential (UUID for QR encoding)
+    const publicCredential = crypto.randomUUID();
 
-    if (createError || !queue) {
-      return NextResponse.json({ message: createError?.message || 'Error creating queue' }, { status: 500 });
-    }
+    const queueDocRef = adminDb.collection('queues').doc();
+    const newQueueData = {
+      queueName: queueName.trim(),
+      queueCode: codeNormalized,
+      averageServiceTime: Number(averageServiceTime),
+      tokenPrefix,
+      lastTokenNumber: 0,
+      userId: user._id,
+      createdAt: new Date().toISOString(),
+      // New config fields
+      isOpen: true,
+      remoteJoiningEnabled: false,
+      qrVersion: 1,
+      publicCredential,
+    };
 
-    return NextResponse.json({
-      _id: queue.id.toString(),
-      queueName: queue.queue_name,
-      queueCode: queue.queue_code,
-      averageServiceTime: queue.average_service_time,
-      tokenPrefix: queue.token_prefix,
-      lastTokenNumber: queue.last_token_number,
-    }, { status: 201 });
-  } catch (error) {
-    return NextResponse.json({ message: (error as Error).message }, { status: 500 });
+    await queueDocRef.set(newQueueData);
+
+    return NextResponse.json(
+      {
+        _id: queueDocRef.id,
+        queueName: newQueueData.queueName,
+        queueCode: newQueueData.queueCode,
+        averageServiceTime: newQueueData.averageServiceTime,
+        tokenPrefix: newQueueData.tokenPrefix,
+        lastTokenNumber: newQueueData.lastTokenNumber,
+        isOpen: true,
+        remoteJoiningEnabled: false,
+        qrVersion: 1,
+        publicCredential,
+      },
+      { status: 201 }
+    );
+  } catch (error: any) {
+    console.error('[POST /api/queues] Error:', error);
+    return NextResponse.json({ message: error?.message || 'Error creating queue' }, { status: 500 });
   }
 }

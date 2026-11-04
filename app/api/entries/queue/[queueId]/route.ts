@@ -1,58 +1,54 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAuthUser } from '@/lib/authMiddleware';
-import { supabaseAdmin } from '@/lib/supabaseAdmin';
+import { requireStaffUser } from '@/lib/authMiddleware';
+import { adminDb } from '@/lib/firebaseAdmin';
+import { QueryDocumentSnapshot } from 'firebase-admin/firestore';
 
-// GET /api/entries/queue/:queueId — protected
+// GET /api/entries/queue/:queueId — protected, staff-only
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ queueId: string }> }
 ) {
   try {
-    const { user, error } = await getAuthUser(req);
+    const { user, error, status } = await requireStaffUser(req);
     if (error || !user) {
-      return NextResponse.json({ message: error || 'Not authorized' }, { status: 401 });
+      return NextResponse.json({ message: error || 'Not authorized' }, { status: status || 401 });
     }
 
     const { queueId } = await params;
+    const queueRef = adminDb.collection('queues').doc(queueId);
+    const queueDoc = await queueRef.get();
 
-    // Verify queue ownership
-    const { data: queue, error: queueError } = await supabaseAdmin
-      .from('queues')
-      .select('user_id')
-      .eq('id', queueId)
-      .maybeSingle();
-
-    if (queueError || !queue) {
+    if (!queueDoc.exists) {
       return NextResponse.json({ message: 'Queue not found' }, { status: 404 });
     }
 
-    if (queue.user_id !== user._id) {
+    const queueData = queueDoc.data();
+    if (queueData?.userId !== user._id) {
       return NextResponse.json({ message: 'Unauthorized' }, { status: 403 });
     }
 
-    const { data: entries, error: dbError } = await supabaseAdmin
-      .from('queue_entries')
-      .select('*')
-      .eq('queue_id', queueId)
-      .order('joined_at', { ascending: true });
+    const entriesSnapshot = await queueRef.collection('entries').get();
 
-    if (dbError || !entries) {
-      return NextResponse.json({ message: dbError?.message || 'Error fetching entries' }, { status: 500 });
-    }
+    const mappedEntries = entriesSnapshot.docs.map((doc: QueryDocumentSnapshot) => {
+      const entry = doc.data();
+      return {
+        _id: doc.id,
+        customerName: entry.customerName,
+        queueId: queueId,
+        token: entry.token,
+        status: entry.status,
+        joinedAt: entry.joinedAt,
+        calledAt: entry.calledAt || null,
+        servedAt: entry.servedAt || null,
+      };
+    });
 
-    const mappedEntries = entries.map((entry) => ({
-      _id: entry.id.toString(),
-      customerName: entry.customer_name,
-      queueId: entry.queue_id.toString(),
-      token: entry.token,
-      status: entry.status,
-      joinedAt: entry.joined_at,
-      calledAt: entry.called_at,
-      servedAt: entry.served_at,
-    }));
+    // Sort by joinedAt ascending
+    mappedEntries.sort((a: any, b: any) => new Date(a.joinedAt).getTime() - new Date(b.joinedAt).getTime());
 
     return NextResponse.json(mappedEntries);
-  } catch (error) {
-    return NextResponse.json({ message: (error as Error).message }, { status: 500 });
+  } catch (error: any) {
+    console.error('[GET /api/entries/queue/[queueId]] Error:', error);
+    return NextResponse.json({ message: error?.message || 'Error fetching entries' }, { status: 500 });
   }
 }

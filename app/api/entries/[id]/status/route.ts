@@ -1,92 +1,100 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAuthUser } from '@/lib/authMiddleware';
-import { supabaseAdmin } from '@/lib/supabaseAdmin';
+import { requireStaffUser } from '@/lib/authMiddleware';
+import { adminDb } from '@/lib/firebaseAdmin';
+import { DocumentReference } from 'firebase-admin/firestore';
 
-// PATCH /api/entries/:id/status — protected
+// PATCH /api/entries/:id/status — protected, staff-only
 export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { user, error } = await getAuthUser(req);
+    const { user, error, status: authStatus } = await requireStaffUser(req);
     if (error || !user) {
-      return NextResponse.json({ message: error || 'Not authorized' }, { status: 401 });
+      return NextResponse.json({ message: error || 'Not authorized' }, { status: authStatus || 401 });
     }
 
     const { id } = await params;
-    const { status } = await req.json();
+    const body = await req.json();
+    const { status, queueId: requestedQueueId } = body;
 
     if (!['waiting', 'called', 'served', 'skipped'].includes(status)) {
       return NextResponse.json({ message: 'Invalid status value' }, { status: 400 });
     }
 
-    const { data: entry, error: fetchError } = await supabaseAdmin
-      .from('queue_entries')
-      .select('*')
-      .eq('id', id)
-      .maybeSingle();
+    let targetEntryRef: DocumentReference | null = null;
+    let targetEntryData: any = null;
+    let targetQueueId: string | null = null;
 
-    if (fetchError || !entry) {
-      return NextResponse.json({ message: 'Queue entry not found' }, { status: 404 });
+    if (requestedQueueId) {
+      const qRef = adminDb.collection('queues').doc(requestedQueueId);
+      const eRef = qRef.collection('entries').doc(id);
+      const [qDoc, eSnap] = await Promise.all([qRef.get(), eRef.get()]);
+      if (qDoc.exists && qDoc.data()?.userId === user._id && eSnap.exists) {
+        targetEntryRef = eRef;
+        targetEntryData = eSnap.data();
+        targetQueueId = requestedQueueId;
+      }
     }
 
-    // Verify queue ownership
-    const { data: queue, error: queueError } = await supabaseAdmin
-      .from('queues')
-      .select('user_id')
-      .eq('id', entry.queue_id)
-      .maybeSingle();
+    // If not found via requestedQueueId, search across the staff user's owned queues
+    if (!targetEntryRef) {
+      const userQueues = await adminDb
+        .collection('queues')
+        .where('userId', '==', user._id)
+        .get();
 
-    if (queueError || !queue) {
-      return NextResponse.json({ message: 'Queue not found' }, { status: 404 });
+      for (const qDoc of userQueues.docs) {
+        const eRef = qDoc.ref.collection('entries').doc(id);
+        const eSnap = await eRef.get();
+        if (eSnap.exists) {
+          targetEntryRef = eRef;
+          targetEntryData = eSnap.data();
+          targetQueueId = qDoc.id;
+          break;
+        }
+      }
     }
 
-    if (queue.user_id !== user._id) {
-      return NextResponse.json({ message: 'Unauthorized' }, { status: 403 });
+    if (!targetEntryRef || !targetEntryData || !targetQueueId) {
+      return NextResponse.json({ message: 'Queue entry not found or unauthorized' }, { status: 404 });
     }
 
     const updateFields: any = { status };
+    const nowIso = new Date().toISOString();
     if (status === 'called') {
-      updateFields.called_at = new Date().toISOString();
+      updateFields.calledAt = nowIso;
     } else if (status === 'served') {
-      updateFields.served_at = new Date().toISOString();
+      updateFields.servedAt = nowIso;
     }
 
-    const { data: updatedEntry, error: updateError } = await supabaseAdmin
-      .from('queue_entries')
-      .update(updateFields)
-      .eq('id', id)
-      .select('*')
-      .single();
-
-    if (updateError || !updatedEntry) {
-      return NextResponse.json({ message: updateError?.message || 'Error updating status' }, { status: 500 });
-    }
+    await targetEntryRef.update(updateFields);
 
     const io = (global as any).io;
     if (io) {
-      io.to(updatedEntry.queue_id.toString()).emit('queue_updated', { queueId: updatedEntry.queue_id });
+      io.to(targetQueueId).emit('queue_updated', { queueId: targetQueueId });
 
       if (status === 'called') {
         io.emit('customer_called', {
-          queueId: updatedEntry.queue_id,
-          token: updatedEntry.token,
-          customerName: updatedEntry.customer_name,
+          queueId: targetQueueId,
+          token: targetEntryData.token,
+          customerName: targetEntryData.customerName,
         });
       }
     }
 
     return NextResponse.json({
-      _id: updatedEntry.id.toString(),
-      customerName: updatedEntry.customer_name,
-      queueId: updatedEntry.queue_id.toString(),
-      token: updatedEntry.token,
-      status: updatedEntry.status,
-      joinedAt: updatedEntry.joined_at,
-      calledAt: updatedEntry.called_at,
-      servedAt: updatedEntry.served_at,
+      _id: id,
+      customerName: targetEntryData.customerName,
+      queueId: targetQueueId,
+      token: targetEntryData.token,
+      status,
+      joinedAt: targetEntryData.joinedAt,
+      calledAt: updateFields.calledAt || targetEntryData.calledAt || null,
+      servedAt: updateFields.servedAt || targetEntryData.servedAt || null,
     });
-  } catch (error) {
-    return NextResponse.json({ message: (error as Error).message }, { status: 500 });
+  } catch (error: any) {
+    console.error('[PATCH /api/entries/[id]/status] Error:', error);
+    return NextResponse.json({ message: error?.message || 'Error updating status' }, { status: 500 });
   }
 }

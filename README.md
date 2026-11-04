@@ -1,21 +1,14 @@
 # QFlow – Smart Queue Management System
 
-![React](https://img.shields.io/badge/React-20232A?logo=react)
+![Next.js](https://img.shields.io/badge/Next.js-000000?logo=nextdotjs)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript)
 ![Node.js](https://img.shields.io/badge/Node.js-339933?logo=node.js)
-![Express.js](https://img.shields.io/badge/Express.js-000000?logo=express)
-![Supabase](https://img.shields.io/badge/Supabase-3ECF8E?logo=supabase)
+![Firebase](https://img.shields.io/badge/Firebase-FFCA28?logo=firebase)
+![Firestore](https://img.shields.io/badge/Cloud_Firestore-FFA611?logo=firebase)
 ![Socket.IO](https://img.shields.io/badge/Socket.IO-010101?logo=socketdotio)
-![Railway](https://img.shields.io/badge/Deployed%20on-Railway-0B0D0E)
+![TailwindCSS](https://img.shields.io/badge/Tailwind_CSS-38B2AC?logo=tailwind-css)
 
-QFlow is a **full-stack, real-time virtual queue management system** that eliminates physical waiting lines through digital queue management. Customers can join queues using a QR code or a unique URL, receive a digital token, and track their queue status in real time. Staff members manage queues through a secure dashboard with live updates powered by Socket.IO and cloud-based data storage using Supabase.
-
----
-
-# 🌐 Live Demo
-
-**Application:**  
-https://smart-queue-production.up.railway.app/
+QFlow is a **full-stack, real-time virtual queue management system** that eliminates physical waiting lines through digital queue management. Customers can join queues using a QR code or a unique URL, receive a digital token, and track their queue status in real time. Staff members manage queues through a secure dashboard with live updates powered by Socket.IO and cloud-based data storage using Google Cloud Firestore and Firebase Authentication.
 
 ---
 
@@ -24,220 +17,138 @@ https://smart-queue-production.up.railway.app/
 ## 👤 Customer Features
 
 - Join a queue without creating an account
-- Receive a unique digital token instantly
-- Track queue position in real time
-- View estimated waiting time
-- Receive browser notifications when the token is called
-- Text-to-Speech (TTS) announcements for called tokens
-- Mobile-friendly interface
+- Receive a unique digital token instantly (atomic generation prevents duplicates)
+- Track queue position and estimated wait time in real time
+- Real-time updates without refreshing via Socket.IO
+- Text-to-Speech (TTS) audio announcements when your token is called
+- Mobile-friendly interface and QR-code join support
 
 ---
 
 ## 👨‍💼 Staff Features
 
-- Secure JWT Authentication
-- Create and manage multiple queues
-- Generate unique queue links
-- Generate QR Codes for each queue
-- View live queue statistics
-- Call the next customer
+- Firebase Authentication (Email / Password with secure ID tokens)
+- Role-based server authorization (staff/admin protected endpoints)
+- Create and manage multiple queues with unique alphanumeric codes
+- Dynamic QR code generation for on-site scanning
+- Real-time live queue statistics (waiting, served, active)
+- Call the next customer with instant audio broadcast
 - Mark customers as **Served** or **Skipped**
-- Real-time dashboard updates using Socket.IO
+- Real-time staff dashboard updates via Socket.IO
 
 ---
 
 # 🛠 Tech Stack
 
-## Frontend
-
-- React
+## Frontend & Full-Stack Framework
+- Next.js 15 (App Router)
+- React 19
 - TypeScript
-- Vite
 - Tailwind CSS
+- Lucide React & QRCode.react
 - Socket.IO Client
-- Lucide React
+
+## Backend & Real-Time
+- Custom Node.js HTTP Server (`server.js`)
+- Socket.IO Server (integrated with Next.js)
+- Firebase Admin SDK (server-side ID token verification & Firestore transactions)
+
+## Cloud Database & Auth
+- **Firebase Authentication**: User identity and session management
+- **Cloud Firestore**: High-performance NoSQL database (Spark free-tier compatible)
 
 ---
 
-## Backend
-
-- Node.js
-- Express.js
-- TypeScript
-- Socket.IO
-- JWT Authentication
-- bcryptjs
-
----
-
-## Database
-
-- Supabase (PostgreSQL)
-
----
-
-## Deployment
-
-- Railway
-- Supabase
-
----
-
-# 🔧 Technologies Used
-
-- React
-- TypeScript
-- Node.js
-- Express.js
-- Socket.IO
-- Supabase
-- JWT Authentication
-- Tailwind CSS
-- Vite
-- Railway
-
----
-
-# 📂 Project Structure
+# 🏗 Database Schema (Cloud Firestore)
 
 ```text
-QFlow
-│
-├── backend
-│   ├── src
-│   ├── controllers
-│   ├── middleware
-│   ├── routes
-│   ├── services
-│   ├── utils
-│   └── server.ts
-│
-├── frontend
-│   ├── src
-│   ├── components
-│   ├── hooks
-│   ├── pages
-│   ├── assets
-│   └── App.tsx
-│
-└── README.md
-```
+/users/{uid}
+  ├── name: string
+  ├── email: string
+  ├── role: 'customer' | 'staff' | 'admin'
+  └── createdAt: timestamp
 
----
-
-# 🔄 System Workflow
-
-1. Staff logs into the dashboard.
-2. Staff creates a queue.
-3. A Queue Code and QR Code are generated.
-4. Customers scan the QR code or open the queue link.
-5. Customers receive a digital token.
-6. Staff calls the next customer.
-7. Socket.IO broadcasts updates instantly.
-8. Customers receive browser notifications and voice announcements.
-9. Staff marks customers as **Served** or **Skipped**.
-
----
-
-# 🏗 System Architecture
-
-```text
-                Customer
-                     │
-                     ▼
-      React + TypeScript Frontend
-                     │
-          REST API + Socket.IO
-                     │
-                     ▼
-      Node.js + Express.js Backend
-                     │
-                     ▼
-        Supabase (PostgreSQL Database)
+/queues/{queueId}
+  ├── queueName: string
+  ├── queueCode: string (e.g., "BANK-A1B2")
+  ├── averageServiceTime: number
+  ├── tokenPrefix: string (e.g., "A")
+  ├── lastTokenNumber: number (atomic counter)
+  ├── userId: string (owner staff UID)
+  ├── createdAt: timestamp
+  │
+  └── entries/{entryId}
+        ├── customerName: string
+        ├── queueId: string
+        ├── token: string (e.g., "A001")
+        ├── status: 'waiting' | 'called' | 'served' | 'skipped'
+        ├── joinedAt: ISO timestamp
+        ├── calledAt: ISO timestamp | null
+        └── servedAt: ISO timestamp | null
 ```
 
 ---
 
 # ⚙️ Environment Variables
 
-## Backend (.env)
+Create `.env.local` in the project root:
 
 ```env
-PORT=5000
+PORT=3000
+NEXT_PUBLIC_SOCKET_URL=http://localhost:3000
 
-SUPABASE_URL=your_supabase_project_url
+# Firebase Client SDK Configuration (Firebase Console -> Project Settings -> General -> Web App)
+NEXT_PUBLIC_FIREBASE_API_KEY=your_firebase_web_api_key
+NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=qflow-645af.firebaseapp.com
+NEXT_PUBLIC_FIREBASE_PROJECT_ID=qflow-645af
+NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=qflow-645af.firebasestorage.app
+NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=your_messaging_sender_id
+NEXT_PUBLIC_FIREBASE_APP_ID=your_firebase_app_id
 
-SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
-
-JWT_SECRET=your_secret_key
-
-FRONTEND_URL=http://localhost:5173
-
-API_URL=http://localhost:5000
+# Firebase Admin SDK Credentials (Firebase Console -> Project Settings -> Service Accounts -> Generate new private key)
+FIREBASE_PROJECT_ID=qflow-645af
+FIREBASE_CLIENT_EMAIL=firebase-adminsdk-xxxxx@qflow-645af.iam.gserviceaccount.com
+FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC...\n-----END PRIVATE KEY-----\n"
 ```
 
 ---
 
-## Frontend (.env)
+# 👨‍💼 Provisioning the First Staff Account
 
-```env
-VITE_API_BASE_URL=http://localhost:5000/api
+Self-registered users in QFlow are always assigned the `customer` role for security.
 
-VITE_SOCKET_URL=http://localhost:5000
+To provision or promote a staff account securely:
+
+```bash
+# 1. Promote an already registered user to staff:
+node scripts/set-staff.js staff@example.com
+
+# 2. Or create a brand new staff user directly:
+node scripts/set-staff.js staff@example.com MySecurePassword123 "Main Office Staff"
 ```
 
 ---
 
-# 📦 Installation
+# 📦 Installation & Running Locally
 
-Clone the repository
-
-```bash
-git clone https://github.com/tanooja-moturi/smart-queue.git
-```
-
-Move into the project directory
-
-```bash
-cd smart-queue
-```
-
-Install dependencies
-
+1. Install dependencies:
 ```bash
 npm install
 ```
 
-Create environment files
-
-```text
-backend/.env
-
-frontend/.env
-```
-
-Configure the environment variables with your own Supabase credentials.
-
-Start the development server
-
+2. Start the development server (runs custom Next.js + Socket.IO server):
 ```bash
 npm run dev
 ```
 
----
-
-# ▶ Running the Application Locally
-
-Frontend
-
+3. Open in your browser:
 ```text
-http://localhost:5173
+http://localhost:3000
 ```
 
-Backend
-
-```text
-http://localhost:5000
+4. Build for production:
+```bash
+npm run build
 ```
 
 ---
@@ -245,92 +156,41 @@ http://localhost:5000
 # 📡 API Endpoints
 
 ## Authentication
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/auth/register` | Register customer account (enforces role: customer) |
+| POST | `/api/auth/login` | Login and obtain session / verify token |
+| GET | `/api/auth/me` | Fetch authenticated user profile & role |
 
-| Method | Endpoint |
-|---------|----------|
-| POST | `/api/auth/register` |
-| POST | `/api/auth/login` |
-| GET | `/api/auth/me` |
-
----
-
-## Queues
-
-| Method | Endpoint |
-|---------|----------|
-| POST | `/api/queues` |
-| GET | `/api/queues` |
-| GET | `/api/queues/public/:code` |
-
----
+## Queues (Staff Protected)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/queues` | Create a new queue (Staff only) |
+| GET | `/api/queues` | List staff member's queues with live stats (Staff only) |
+| DELETE | `/api/queues/:id` | Cascade delete queue and entries (Staff only) |
+| GET | `/api/queues/public/:code` | Public queue lookup by alphanumeric code |
 
 ## Queue Entries
-
-| Method | Endpoint |
-|---------|----------|
-| POST | `/api/entries/join/:code` |
-| GET | `/api/entries/track/:token` |
-| GET | `/api/entries/queue/:queueId` |
-| PATCH | `/api/entries/:id/status` |
-| POST | `/api/entries/queue/:queueId/call-next` |
-
----
-
-# 🌍 Deployment
-
-| Service | Platform |
-|----------|----------|
-| Frontend | Railway |
-| Backend | Railway |
-| Database | Supabase (PostgreSQL) |
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/entries/join/:code` | Public: Join queue with atomic token increment |
+| GET | `/api/entries/track/:token` | Public: Track token position and wait time |
+| GET | `/api/entries/queue/:queueId` | Staff: Retrieve entries for a queue |
+| POST | `/api/entries/queue/:queueId/call-next` | Staff: Call next customer in line |
+| PATCH | `/api/entries/:id/status` | Staff: Update customer status (served/skipped) |
 
 ---
 
-# 📸 Screenshots
+# 🔒 Security Rules
 
-> Screenshots and demo GIFs will be added soon.
-
-Suggested screenshots:
-
-- Login Page
-- Dashboard
-- Queue Creation
-- QR Code
-- Customer Queue Page
-- Live Queue Tracking
-- Mobile View
-
----
-
-# 🎯 Future Enhancements
-
-- SMS Notifications
-- Email Notifications
-- Multi-Branch Queue Management
-- Analytics Dashboard
-- Mobile Application
-- Admin Panel
-- Queue History Reports
-- AI-Based Waiting Time Prediction
+Firestore rules are defined in `firestore.rules`. Deploy rules to Firebase via Firebase CLI:
+```bash
+firebase deploy --only firestore:rules
+```
 
 ---
 
 # 👩‍💻 Author
 
 **Moturi Venkata Satya Tanooja Sree**
-
-B.Tech – Computer Science and Engineering
-
-Vignan Institute of Information Technology
-
-GitHub  
-https://github.com/tanooja-moturi/smart-queue
-
-LinkedIn  
-https://www.linkedin.com/in/tanooja-moturi-427346318
-
----
-
-# 📄 License
-
-This project is developed for educational, research, and portfolio purposes.
+GitHub: https://github.com/tanooja-moturi/smart-queue

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabaseAdmin';
+import { adminDb } from '@/lib/firebaseAdmin';
+import { DocumentSnapshot, QueryDocumentSnapshot } from 'firebase-admin/firestore';
 
 // GET /api/entries/track/:token — public, no auth required
 export async function GET(
@@ -9,83 +10,114 @@ export async function GET(
   try {
     const { token } = await params;
     const { searchParams } = new URL(req.url);
-    const queue = searchParams.get('queue');
+    const queueParam = searchParams.get('queue');
+    const upperToken = token ? token.trim().toUpperCase() : '';
 
-    let resolvedQueueId: string | null = null;
+    if (!upperToken) {
+      return NextResponse.json({ message: 'Token is required' }, { status: 400 });
+    }
 
-    if (queue) {
-      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(queue);
-      if (isUuid) {
-        resolvedQueueId = queue;
+    let targetQueueDoc: DocumentSnapshot | null = null;
+    let targetEntryDoc: DocumentSnapshot | null = null;
+
+    // 1. If queue param is provided, locate queue directly first
+    if (queueParam) {
+      const cleanQueueParam = queueParam.trim();
+      // Try by document ID
+      const byId = await adminDb.collection('queues').doc(cleanQueueParam).get();
+      if (byId.exists) {
+        targetQueueDoc = byId;
       } else {
-        const { data: foundQueue } = await supabaseAdmin
-          .from('queues')
-          .select('id')
-          .ilike('queue_code', queue)
-          .maybeSingle();
-        if (foundQueue) {
-          resolvedQueueId = foundQueue.id;
+        // Try by queueCode
+        const byCode = await adminDb
+          .collection('queues')
+          .where('queueCode', '==', cleanQueueParam.toUpperCase())
+          .limit(1)
+          .get();
+        if (!byCode.empty) {
+          targetQueueDoc = byCode.docs[0];
+        }
+      }
+
+      if (targetQueueDoc) {
+        const entrySnap = await targetQueueDoc.ref
+          .collection('entries')
+          .where('token', '==', upperToken)
+          .limit(1)
+          .get();
+
+        if (!entrySnap.empty) {
+          targetEntryDoc = entrySnap.docs[0];
         }
       }
     }
 
-    let dbQuery = supabaseAdmin
-      .from('queue_entries')
-      .select('*, queues(*)')
-      .eq('token', token.toUpperCase());
+    // 2. If not found via queue param, query across entries collection group
+    if (!targetEntryDoc) {
+      const groupSnap = await adminDb
+        .collectionGroup('entries')
+        .where('token', '==', upperToken)
+        .limit(1)
+        .get();
 
-    if (resolvedQueueId) {
-      dbQuery = dbQuery.eq('queue_id', resolvedQueueId);
+      if (!groupSnap.empty) {
+        targetEntryDoc = groupSnap.docs[0];
+        const parentQueueRef = targetEntryDoc.ref.parent.parent;
+        if (parentQueueRef) {
+          targetQueueDoc = await parentQueueRef.get();
+        }
+      }
     }
 
-    const { data: entries, error: dbError } = await dbQuery
-      .order('joined_at', { ascending: false })
-      .limit(1);
-
-    if (dbError || !entries || entries.length === 0) {
+    if (!targetEntryDoc || !targetQueueDoc || !targetQueueDoc.exists) {
       return NextResponse.json({ message: 'Queue entry not found' }, { status: 404 });
     }
 
-    const entry = entries[0];
-    const queueDetails = entry.queues;
+    const entryData = targetEntryDoc.data()!;
+    const queueData = targetQueueDoc.data()!;
+    const entriesRef = targetQueueDoc.ref.collection('entries');
 
-    const { count: peopleAhead } = await supabaseAdmin
-      .from('queue_entries')
-      .select('*', { count: 'exact', head: true })
-      .eq('queue_id', entry.queue_id)
-      .eq('status', 'waiting')
-      .lt('joined_at', entry.joined_at);
+    // 3. Concurrently fetch waiting entries and currently serving entry
+    const [waitingSnap, calledSnap] = await Promise.all([
+      entriesRef.where('status', '==', 'waiting').get(),
+      entriesRef.where('status', '==', 'called').limit(1).get(),
+    ]);
 
-    const { data: currentServingEntry } = await supabaseAdmin
-      .from('queue_entries')
-      .select('token')
-      .eq('queue_id', entry.queue_id)
-      .eq('status', 'called')
-      .order('called_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    const entryJoinedTime = new Date(entryData.joinedAt).getTime();
+    let peopleAhead = 0;
+
+    waitingSnap.docs.forEach((doc: QueryDocumentSnapshot) => {
+      const d = doc.data();
+      if (new Date(d.joinedAt).getTime() < entryJoinedTime) {
+        peopleAhead++;
+      }
+    });
+
+    const currentServingEntry = !calledSnap.empty ? calledSnap.docs[0].data() : null;
 
     const mappedEntry = {
-      _id: entry.id.toString(),
-      customerName: entry.customer_name,
-      token: entry.token,
-      status: entry.status,
-      joinedAt: entry.joined_at,
+      _id: targetEntryDoc.id,
+      customerName: entryData.customerName,
+      token: entryData.token,
+      status: entryData.status,
+      joinedAt: entryData.joinedAt,
+      calledAt: entryData.calledAt || null,
       queueId: {
-        _id: queueDetails.id.toString(),
-        queueName: queueDetails.queue_name,
-        queueCode: queueDetails.queue_code,
-        averageServiceTime: queueDetails.average_service_time,
+        _id: targetQueueDoc.id,
+        queueName: queueData.queueName,
+        queueCode: queueData.queueCode,
+        averageServiceTime: queueData.averageServiceTime,
       },
     };
 
     return NextResponse.json({
       entry: mappedEntry,
-      peopleAhead: peopleAhead || 0,
+      peopleAhead,
       currentServing: currentServingEntry ? currentServingEntry.token : 'None',
-      averageServiceTime: queueDetails.average_service_time,
+      averageServiceTime: queueData.averageServiceTime,
     });
-  } catch (error) {
-    return NextResponse.json({ message: (error as Error).message }, { status: 500 });
+  } catch (error: any) {
+    console.error('[GET /api/entries/track/[token]] Error:', error);
+    return NextResponse.json({ message: error?.message || 'Error tracking entry' }, { status: 500 });
   }
 }

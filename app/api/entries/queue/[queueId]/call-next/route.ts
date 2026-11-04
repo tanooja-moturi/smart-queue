@@ -1,72 +1,79 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAuthUser } from '@/lib/authMiddleware';
-import { supabaseAdmin } from '@/lib/supabaseAdmin';
+import { requireStaffUser } from '@/lib/authMiddleware';
+import { adminDb } from '@/lib/firebaseAdmin';
+import { QueryDocumentSnapshot } from 'firebase-admin/firestore';
 
-// POST /api/entries/queue/:queueId/call-next — protected
+// POST /api/entries/queue/:queueId/call-next — protected, staff-only
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ queueId: string }> }
 ) {
   try {
-    const { user, error } = await getAuthUser(req);
+    const { user, error, status } = await requireStaffUser(req);
     if (error || !user) {
-      return NextResponse.json({ message: error || 'Not authorized' }, { status: 401 });
+      return NextResponse.json({ message: error || 'Not authorized' }, { status: status || 401 });
     }
 
     const { queueId } = await params;
+    const queueRef = adminDb.collection('queues').doc(queueId);
+    const queueDoc = await queueRef.get();
 
-    // Verify queue ownership
-    const { data: queue, error: queueError } = await supabaseAdmin
-      .from('queues')
-      .select('user_id')
-      .eq('id', queueId)
-      .maybeSingle();
-
-    if (queueError || !queue) {
+    if (!queueDoc.exists) {
       return NextResponse.json({ message: 'Queue not found' }, { status: 404 });
     }
 
-    if (queue.user_id !== user._id) {
+    const queueData = queueDoc.data();
+    if (queueData?.userId !== user._id) {
       return NextResponse.json({ message: 'Unauthorized' }, { status: 403 });
     }
 
-    // 1. Mark any currently 'called' customer as 'served'
-    await supabaseAdmin
-      .from('queue_entries')
-      .update({ status: 'served', served_at: new Date().toISOString() })
-      .eq('queue_id', queueId)
-      .eq('status', 'called');
+    const entriesRef = queueRef.collection('entries');
+    const nowIso = new Date().toISOString();
+    const batch = adminDb.batch();
 
-    // 2. Find the oldest waiting customer for this queue
-    const { data: nextEntry, error: fetchError } = await supabaseAdmin
-      .from('queue_entries')
-      .select('*')
-      .eq('queue_id', queueId)
-      .eq('status', 'waiting')
-      .order('joined_at', { ascending: true })
-      .limit(1)
-      .maybeSingle();
+    // 1 & 2. Concurrently fetch currently 'called' and 'waiting' customers
+    const [calledSnapshot, waitingSnapshot] = await Promise.all([
+      entriesRef.where('status', '==', 'called').get(),
+      entriesRef.where('status', '==', 'waiting').get(),
+    ]);
+
+    calledSnapshot.docs.forEach((doc: QueryDocumentSnapshot) => {
+      batch.update(doc.ref, { status: 'served', servedAt: nowIso });
+    });
 
     const io = (global as any).io;
 
-    if (!nextEntry) {
+    if (waitingSnapshot.empty) {
+      await batch.commit();
       if (io) {
         io.to(queueId).emit('queue_updated', { queueId });
       }
       return NextResponse.json({ message: 'No customers waiting in queue', entry: null });
     }
 
-    // 3. Mark next customer as called
-    const { data: updatedEntry, error: updateError } = await supabaseAdmin
-      .from('queue_entries')
-      .update({ status: 'called', called_at: new Date().toISOString() })
-      .eq('id', nextEntry.id)
-      .select('*')
-      .single();
+    // Sort waiting entries by joinedAt ascending
+    const waitingDocs = waitingSnapshot.docs.sort(
+      (a: QueryDocumentSnapshot, b: QueryDocumentSnapshot) =>
+        new Date(a.data().joinedAt).getTime() - new Date(b.data().joinedAt).getTime()
+    );
+    const nextEntryDoc = waitingDocs[0];
+    const nextEntryRef = nextEntryDoc.ref;
+    const nextEntryData = nextEntryDoc.data();
 
-    if (updateError || !updatedEntry) {
-      return NextResponse.json({ message: updateError?.message || 'Error calling next customer' }, { status: 500 });
-    }
+    // 3. Mark next customer as called
+    batch.update(nextEntryRef, { status: 'called', calledAt: nowIso });
+    await batch.commit();
+
+    const updatedEntry = {
+      _id: nextEntryDoc.id,
+      customerName: nextEntryData.customerName,
+      queueId,
+      token: nextEntryData.token,
+      status: 'called',
+      joinedAt: nextEntryData.joinedAt,
+      calledAt: nowIso,
+      servedAt: nextEntryData.servedAt || null,
+    };
 
     // 4. Broadcast the update
     if (io) {
@@ -74,21 +81,13 @@ export async function POST(
       io.emit('customer_called', {
         queueId,
         token: updatedEntry.token,
-        customerName: updatedEntry.customer_name,
+        customerName: updatedEntry.customerName,
       });
     }
 
-    return NextResponse.json({
-      _id: updatedEntry.id.toString(),
-      customerName: updatedEntry.customer_name,
-      queueId: updatedEntry.queue_id.toString(),
-      token: updatedEntry.token,
-      status: updatedEntry.status,
-      joinedAt: updatedEntry.joined_at,
-      calledAt: updatedEntry.called_at,
-      servedAt: updatedEntry.served_at,
-    });
-  } catch (error) {
-    return NextResponse.json({ message: (error as Error).message }, { status: 500 });
+    return NextResponse.json(updatedEntry);
+  } catch (error: any) {
+    console.error('[POST /api/entries/queue/[queueId]/call-next] Error:', error);
+    return NextResponse.json({ message: error?.message || 'Error calling next customer' }, { status: 500 });
   }
 }

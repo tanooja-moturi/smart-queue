@@ -8,7 +8,8 @@ import { apiRequest } from '@/lib/api';
 import { QRCodeSVG } from 'qrcode.react';
 import { 
   Users, Plus, LogOut, Play, CheckCircle2, 
-  XCircle, Clock, Volume2, UserCheck, Copy, Check, Trash2 
+  XCircle, Clock, Volume2, UserCheck, Copy, Check, Trash2,
+  RefreshCw, Radio, AlertTriangle, ShieldAlert
 } from 'lucide-react';
 
 interface Queue {
@@ -21,6 +22,10 @@ interface Queue {
   waitingCount?: number;
   servedCount?: number;
   currentServing?: string;
+  isOpen?: boolean;
+  remoteJoiningEnabled?: boolean;
+  qrVersion?: number;
+  publicCredential?: string;
 }
 
 interface QueueEntry {
@@ -39,10 +44,14 @@ export default function DashboardPage() {
   const { socket } = useSocket();
   const router = useRouter();
 
-  // Redirect if not authenticated
+  // Redirect if not authenticated or if customer
   useEffect(() => {
-    if (!loading && !user) {
-      router.replace('/login');
+    if (!loading) {
+      if (!user) {
+        router.replace('/login');
+      } else if (user.role === 'customer') {
+        router.replace('/customer');
+      }
     }
   }, [user, loading, router]);
 
@@ -71,19 +80,73 @@ export default function DashboardPage() {
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
+  // QR regeneration states
+  const [isRegenerateModalOpen, setIsRegenerateModalOpen] = useState(false);
+  const [isRegenerating, setIsRegenerating] = useState(false);
+  const [regenerateMessage, setRegenerateMessage] = useState<string | null>(null);
+  const [updatingSettings, setUpdatingSettings] = useState(false);
+
+  const handleToggleSetting = async (key: 'isOpen' | 'remoteJoiningEnabled', value: boolean) => {
+    if (!selectedQueue) return;
+    setUpdatingSettings(true);
+    try {
+      await apiRequest(`/queues/${selectedQueue._id}/settings`, 'PATCH', { [key]: value });
+      setSelectedQueue((prev) => (prev ? { ...prev, [key]: value } : null));
+      setQueues((prev) =>
+        prev.map((q) => (q._id === selectedQueue._id ? { ...q, [key]: value } : q))
+      );
+    } catch (err: any) {
+      console.error('Failed to update queue settings:', err);
+    } finally {
+      setUpdatingSettings(false);
+    }
+  };
+
+  const handleRegenerateQr = async () => {
+    if (!selectedQueue) return;
+    setIsRegenerating(true);
+    setRegenerateMessage(null);
+    try {
+      const res = await apiRequest(`/queues/${selectedQueue._id}/regenerate-qr`, 'POST');
+      setSelectedQueue((prev) =>
+        prev ? { ...prev, qrVersion: res.qrVersion, publicCredential: res.publicCredential } : null
+      );
+      setQueues((prev) =>
+        prev.map((q) =>
+          q._id === selectedQueue._id
+            ? { ...q, qrVersion: res.qrVersion, publicCredential: res.publicCredential }
+            : q
+        )
+      );
+      setRegenerateMessage(res.message || 'QR code rotated successfully');
+      setTimeout(() => {
+        setIsRegenerateModalOpen(false);
+        setRegenerateMessage(null);
+      }, 1500);
+    } catch (err: any) {
+      setRegenerateMessage(err.message || 'Failed to rotate QR code');
+    } finally {
+      setIsRegenerating(false);
+    }
+  };
+
+  const [callingNext, setCallingNext] = useState(false);
+  const [updatingEntryId, setUpdatingEntryId] = useState<string | null>(null);
+
   const fetchQueues = useCallback(async () => {
     try {
       const data = await apiRequest('/queues');
       setQueues(data);
       // Update selected queue stats if it's already selected
-      if (selectedQueue) {
-        const updated = data.find((q: Queue) => q._id === selectedQueue._id);
-        if (updated) setSelectedQueue(updated);
-      }
+      setSelectedQueue((prev) => {
+        if (!prev) return data.length > 0 ? data[0] : null;
+        const updated = data.find((q: Queue) => q._id === prev._id);
+        return updated || prev;
+      });
     } catch (err) {
       console.error('Error fetching queues:', err);
     }
-  }, [selectedQueue]);
+  }, []);
 
   const fetchEntries = useCallback(async (queueId: string) => {
     try {
@@ -97,38 +160,32 @@ export default function DashboardPage() {
   // Fetch queues on mount
   useEffect(() => {
     if (user) fetchQueues();
-  }, [user]); // Run once when user is available
+  }, [user, fetchQueues]);
 
-  // Selected queue watcher: join room and load entries
+  // Selected queue watcher: join room and load entries (only re-subscribe when queueId changes)
+  const currentQueueId = selectedQueue?._id;
   useEffect(() => {
-    if (!selectedQueue || !socket) return;
+    if (!currentQueueId || !socket) return;
 
-    const queueId = selectedQueue._id;
-    fetchEntries(queueId);
+    fetchEntries(currentQueueId);
 
     // Join room
-    socket.emit('join_queue', { queueId });
+    socket.emit('join_queue', { queueId: currentQueueId });
 
     // Handle updates
     const handleQueueUpdated = (data: { queueId: string }) => {
-      if (data.queueId === queueId) {
-        fetchEntries(queueId);
-        // Refresh queue stats in list
-        apiRequest('/queues').then((qs) => {
-          setQueues(qs);
-          const updated = qs.find((q: Queue) => q._id === queueId);
-          if (updated) setSelectedQueue(updated);
-        });
+      if (data.queueId === currentQueueId) {
+        fetchEntries(currentQueueId);
       }
     };
 
     socket.on('queue_updated', handleQueueUpdated);
 
     return () => {
-      socket.emit('leave_queue', { queueId });
+      socket.emit('leave_queue', { queueId: currentQueueId });
       socket.off('queue_updated', handleQueueUpdated);
     };
-  }, [selectedQueue, socket, fetchEntries]);
+  }, [currentQueueId, socket, fetchEntries]);
 
   const handleCreateQueue = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -170,21 +227,57 @@ export default function DashboardPage() {
   };
 
   const handleCallNext = async () => {
-    if (!selectedQueue) return;
+    if (!selectedQueue || callingNext) return;
+    setCallingNext(true);
+
+    // Optimistic UI update: instantly update currently serving and entry status
+    const waitingList = entries.filter((e) => e.status === 'waiting');
+    if (waitingList.length > 0) {
+      const nextCalled = waitingList[0];
+      setEntries((prev) =>
+        prev.map((e) => {
+          if (e.status === 'called') return { ...e, status: 'served', servedAt: new Date().toISOString() };
+          if (e._id === nextCalled._id) return { ...e, status: 'called', calledAt: new Date().toISOString() };
+          return e;
+        })
+      );
+      setSelectedQueue((prev) =>
+        prev ? { ...prev, currentServing: nextCalled.token, waitingCount: Math.max(0, (prev.waitingCount || 1) - 1) } : null
+      );
+    }
+
     try {
       await apiRequest(`/entries/queue/${selectedQueue._id}/call-next`, 'POST');
-      // Sockets will trigger refresh
     } catch (err) {
       console.error('Error calling next customer:', err);
+      fetchEntries(selectedQueue._id);
+    } finally {
+      setCallingNext(false);
     }
   };
 
   const handleUpdateStatus = async (id: string, status: 'served' | 'skipped') => {
+    if (updatingEntryId === id) return;
+    setUpdatingEntryId(id);
+
+    // Optimistic UI update: immediately change entry status in local state
+    const target = entries.find((e) => e._id === id);
+    setEntries((prev) =>
+      prev.map((e) => (e._id === id ? { ...e, status, ...(status === 'served' ? { servedAt: new Date().toISOString() } : {}) } : e))
+    );
+    if (status === 'served' && target && target.status === 'called') {
+      setSelectedQueue((prev) =>
+        prev ? { ...prev, currentServing: 'None', servedCount: (prev.servedCount || 0) + 1 } : null
+      );
+    }
+
     try {
-      await apiRequest(`/entries/${id}/status`, 'PATCH', { status });
-      // Sockets will trigger refresh
+      await apiRequest(`/entries/${id}/status`, 'PATCH', { status, queueId: selectedQueue?._id });
     } catch (err) {
       console.error(`Error updating entry to ${status}:`, err);
+      if (selectedQueue) fetchEntries(selectedQueue._id);
+    } finally {
+      setUpdatingEntryId(null);
     }
   };
 
@@ -223,11 +316,14 @@ export default function DashboardPage() {
   // Find currently serving entry (called status)
   const currentServingEntry = entries.find((e) => e.status === 'called');
 
-  // Show loading spinner while auth is being checked
-  if (loading || !user) {
+  // Show loading spinner while auth is being checked or customer is being redirected
+  if (loading || !user || user.role === 'customer') {
     return (
-      <div className="min-h-screen bg-[#070a13] flex items-center justify-center">
+      <div className="min-h-screen bg-[#070a13] flex flex-col items-center justify-center gap-3">
         <div className="w-10 h-10 border-4 border-brand-500 border-t-transparent rounded-full animate-spin"></div>
+        {user?.role === 'customer' && (
+          <p className="text-gray-400 text-sm">Customer account detected. Redirecting to Customer Portal...</p>
+        )}
       </div>
     );
   }
@@ -242,7 +338,7 @@ export default function DashboardPage() {
           </div>
           <span className="font-extrabold text-lg tracking-tight text-white">QFlow Dashboard</span>
         </div>
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-3">
           <div className="text-right hidden sm:block">
             <div className="text-white text-sm font-semibold">{user?.name}</div>
             <div className="text-xs text-gray-500 capitalize">{user?.role} Profile</div>
@@ -349,8 +445,43 @@ export default function DashboardPage() {
                       </div>
                     </div>
 
+                    {/* Queue Settings Controls Bar */}
+                    <div className="flex flex-wrap items-center gap-2 sm:gap-3 my-4 pt-3 border-t border-white/5">
+                      <button
+                        onClick={() => handleToggleSetting('isOpen', selectedQueue.isOpen === false ? true : false)}
+                        disabled={updatingSettings}
+                        className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
+                          selectedQueue.isOpen !== false
+                            ? 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/25'
+                            : 'bg-red-500/15 border border-red-500/30 text-red-400 hover:bg-red-500/25'
+                        }`}
+                        title="Toggle Queue Open or Closed for new entries"
+                      >
+                        <span className={`w-2 h-2 rounded-full ${selectedQueue.isOpen !== false ? 'bg-emerald-400 animate-pulse' : 'bg-red-400'}`} />
+                        {selectedQueue.isOpen !== false ? 'Queue Open' : 'Queue Closed'}
+                      </button>
+
+                      <button
+                        onClick={() => handleToggleSetting('remoteJoiningEnabled', !selectedQueue.remoteJoiningEnabled)}
+                        disabled={updatingSettings}
+                        className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
+                          selectedQueue.remoteJoiningEnabled
+                            ? 'bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 hover:bg-indigo-500/25'
+                            : 'bg-white/5 border border-white/10 text-gray-400 hover:bg-white/10'
+                        }`}
+                        title="Allow customers with saved pass to join remotely"
+                      >
+                        <Radio className="w-3.5 h-3.5" />
+                        {selectedQueue.remoteJoiningEnabled ? 'Remote Join Active' : 'Remote Join Off'}
+                      </button>
+
+                      <span className="text-[11px] text-gray-400 bg-white/5 border border-white/5 px-2.5 py-1 rounded-lg font-mono">
+                        QR v{selectedQueue.qrVersion || 1}
+                      </span>
+                    </div>
+
                     {/* Prominent Current Serving Banner */}
-                    <div className="mt-6 bg-white/5 border border-white/5 rounded-2xl p-6 flex flex-col sm:flex-row items-center justify-between gap-4">
+                    <div className="mt-4 bg-white/5 border border-white/5 rounded-2xl p-6 flex flex-col sm:flex-row items-center justify-between gap-4">
                       <div>
                         <span className="text-gray-500 text-xs font-semibold uppercase tracking-wider block">Now Serving</span>
                         <span className="text-4xl font-extrabold text-white font-mono tracking-tight mt-1 block">
@@ -375,10 +506,10 @@ export default function DashboardPage() {
                         )}
                         <button
                           onClick={handleCallNext}
-                          disabled={activeEntries.length === 0 && !currentServingEntry}
+                          disabled={(activeEntries.length === 0 && !currentServingEntry) || callingNext}
                           className="flex-1 sm:flex-none px-6 py-3 bg-gradient-to-r from-brand-600 to-indigo-600 hover:from-brand-500 hover:to-indigo-500 disabled:opacity-50 text-white font-semibold text-sm rounded-xl transition flex items-center justify-center gap-2 shadow-lg shadow-brand-600/30"
                         >
-                          <Play className="w-4 h-4 fill-white" /> Call Next
+                          <Play className="w-4 h-4 fill-white" /> {callingNext ? 'Calling...' : 'Call Next'}
                         </button>
                       </div>
                     </div>
@@ -403,11 +534,17 @@ export default function DashboardPage() {
 
                 {/* QR Section */}
                 <div className="w-full lg:w-80 glass p-6 rounded-3xl flex flex-col items-center justify-between gap-4 text-center">
-                  <span className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Queue QR Code</span>
+                  <div className="flex items-center justify-between w-full">
+                    <span className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Queue QR Code</span>
+                    <span className="text-[10px] bg-brand-500/10 text-brand-400 border border-brand-500/20 px-2 py-0.5 rounded-full font-mono font-bold">
+                      v{selectedQueue.qrVersion || 1}
+                    </span>
+                  </div>
+
                   <div className="bg-white p-4 rounded-2xl shadow-inner inline-block relative border border-white/10">
                     <QRCodeSVG 
                       value={getJoinUrl(selectedQueue.queueCode)} 
-                      size={150}
+                      size={145}
                       level="H"
                       includeMargin={false}
                     />
@@ -429,6 +566,17 @@ export default function DashboardPage() {
                           <Copy className="w-3.5 h-3.5" /> Copy Join Link
                         </>
                       )}
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        setRegenerateMessage(null);
+                        setIsRegenerateModalOpen(true);
+                      }}
+                      className="w-full py-2 bg-amber-500/10 hover:bg-amber-500/15 border border-amber-500/20 text-amber-300 rounded-xl transition text-xs font-semibold flex items-center justify-center gap-1.5"
+                      title="Rotate credential to expire old QR codes"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" /> Regenerate QR Code
                     </button>
                   </div>
                 </div>
@@ -510,14 +658,16 @@ export default function DashboardPage() {
                                   <>
                                     <button
                                       onClick={() => handleUpdateStatus(entry._id, 'served')}
-                                      className="p-2 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/25 hover:border-emerald-500/40 text-emerald-400 transition"
+                                      disabled={updatingEntryId === entry._id}
+                                      className="p-2 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/25 hover:border-emerald-500/40 text-emerald-400 disabled:opacity-50 transition"
                                       title="Mark Served"
                                     >
                                       <CheckCircle2 className="w-4 h-4" />
                                     </button>
                                     <button
                                       onClick={() => handleUpdateStatus(entry._id, 'skipped')}
-                                      className="p-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 border border-red-500/25 hover:border-red-500/40 text-red-400 transition"
+                                      disabled={updatingEntryId === entry._id}
+                                      className="p-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 border border-red-500/25 hover:border-red-500/40 text-red-400 disabled:opacity-50 transition"
                                       title="Skip Customer"
                                     >
                                       <XCircle className="w-4 h-4" />
@@ -525,14 +675,32 @@ export default function DashboardPage() {
                                   </>
                                 ) : (
                                   <button
+                                    disabled={updatingEntryId === entry._id}
                                     onClick={async () => {
-                                      // Call this specific customer: first mark current serving served
-                                      if (currentServingEntry) {
-                                        await handleUpdateStatus(currentServingEntry._id, 'served');
+                                      if (updatingEntryId === entry._id) return;
+                                      setUpdatingEntryId(entry._id);
+                                      // Optimistic UI update
+                                      setEntries((prev) =>
+                                        prev.map((e) => {
+                                          if (e.status === 'called') return { ...e, status: 'served', servedAt: new Date().toISOString() };
+                                          if (e._id === entry._id) return { ...e, status: 'called', calledAt: new Date().toISOString() };
+                                          return e;
+                                        })
+                                      );
+                                      setSelectedQueue((prev) => prev ? { ...prev, currentServing: entry.token } : null);
+                                      try {
+                                        if (currentServingEntry) {
+                                          await apiRequest(`/entries/${currentServingEntry._id}/status`, 'PATCH', { status: 'served', queueId: selectedQueue?._id });
+                                        }
+                                        await apiRequest(`/entries/${entry._id}/status`, 'PATCH', { status: 'called', queueId: selectedQueue?._id });
+                                      } catch (err) {
+                                        console.error('Call this customer failed:', err);
+                                        if (selectedQueue) fetchEntries(selectedQueue._id);
+                                      } finally {
+                                        setUpdatingEntryId(null);
                                       }
-                                      await apiRequest(`/entries/${entry._id}/status`, 'PATCH', { status: 'called' });
                                     }}
-                                    className="px-3.5 py-1.5 rounded-xl bg-white/5 hover:bg-brand-500/20 border border-white/10 hover:border-brand-500/30 text-xs font-semibold text-gray-300 hover:text-white transition flex items-center gap-1"
+                                    className="px-3.5 py-1.5 rounded-xl bg-white/5 hover:bg-brand-500/20 border border-white/10 hover:border-brand-500/30 disabled:opacity-50 text-xs font-semibold text-gray-300 hover:text-white transition flex items-center gap-1"
                                   >
                                     <UserCheck className="w-3.5 h-3.5" /> Call This
                                   </button>
@@ -708,6 +876,61 @@ export default function DashboardPage() {
                 className="px-5 py-2.5 bg-red-600 hover:bg-red-500 text-white font-semibold text-sm rounded-xl transition shadow-lg shadow-red-600/25"
               >
                 {isDeleting ? 'Deleting...' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Regenerate QR Code Modal */}
+      {isRegenerateModalOpen && selectedQueue && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 px-4">
+          <div className="glass w-full max-w-md p-6 rounded-3xl border border-white/10 relative">
+            <div className="w-12 h-12 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 mb-4">
+              <AlertTriangle className="w-6 h-6" />
+            </div>
+
+            <h3 className="text-xl font-bold text-white mb-2">Regenerate QR Code?</h3>
+            <p className="text-gray-400 text-sm mb-4 leading-relaxed">
+              This will rotate the security credential for <span className="text-white font-semibold">"{selectedQueue.queueName}"</span> to version {(selectedQueue.qrVersion || 1) + 1}.
+            </p>
+            <p className="text-amber-200/90 text-xs bg-amber-500/10 border border-amber-500/20 p-3 rounded-xl mb-6">
+              ⚠️ Customers who previously saved this queue will need to physically re-scan your new in-store QR code to join remotely. Active customers currently in line are not affected.
+            </p>
+
+            {regenerateMessage && (
+              <div className="mb-4 p-3 rounded-xl bg-brand-500/15 border border-brand-500/30 text-brand-300 text-xs">
+                {regenerateMessage}
+              </div>
+            )}
+
+            <div className="flex gap-3 pt-2 border-t border-white/5 justify-end">
+              <button
+                type="button"
+                disabled={isRegenerating}
+                onClick={() => {
+                  setIsRegenerateModalOpen(false);
+                  setRegenerateMessage(null);
+                }}
+                className="px-4 py-2 text-sm font-semibold text-gray-400 hover:text-white transition bg-transparent hover:bg-white/5 rounded-xl"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isRegenerating}
+                onClick={handleRegenerateQr}
+                className="px-5 py-2.5 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 disabled:opacity-50 text-white font-semibold text-sm rounded-xl transition flex items-center gap-1.5 shadow-lg shadow-amber-600/25"
+              >
+                {isRegenerating ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin" /> Rotating...
+                  </>
+                ) : (
+                  <>
+                    <RefreshCw className="w-4 h-4" /> Confirm & Rotate
+                  </>
+                )}
               </button>
             </div>
           </div>

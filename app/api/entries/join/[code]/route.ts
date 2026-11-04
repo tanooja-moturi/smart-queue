@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabaseAdmin';
+import { adminDb } from '@/lib/firebaseAdmin';
+import { getAuthUser } from '@/lib/authMiddleware';
+import { Transaction } from 'firebase-admin/firestore';
 
 // POST /api/entries/join/:code — public, no auth required
 export async function POST(
@@ -8,94 +10,130 @@ export async function POST(
 ) {
   try {
     const { code } = await params;
-    const { customerName } = await req.json();
+    const cleanCode = code ? code.trim().toUpperCase() : '';
+    const body = await req.json();
+    const { customerName, deviceId } = body;
 
-    if (!customerName || customerName.trim() === '') {
+    const { user } = await getAuthUser(req).catch(() => ({ user: null }));
+
+    if (!customerName || typeof customerName !== 'string' || customerName.trim() === '') {
       return NextResponse.json({ message: 'Customer name is required' }, { status: 400 });
     }
 
-    // 1. Find Queue
-    const { data: queue, error: queueError } = await supabaseAdmin
-      .from('queues')
-      .select('*')
-      .ilike('queue_code', code)
-      .maybeSingle();
+    const trimmedName = customerName.trim();
 
-    if (queueError || !queue) {
+    // 1. Find Queue by code
+    const queueQuery = await adminDb
+      .collection('queues')
+      .where('queueCode', '==', cleanCode)
+      .limit(1)
+      .get();
+
+    if (queueQuery.empty) {
       return NextResponse.json({ message: 'Queue not found' }, { status: 404 });
     }
 
-    // Check if customer is already active in this queue (waiting or called)
-    const trimmedName = customerName.trim();
-    const { data: existingEntry } = await supabaseAdmin
-      .from('queue_entries')
-      .select('*')
-      .eq('queue_id', queue.id)
-      .ilike('customer_name', trimmedName)
-      .in('status', ['waiting', 'called'])
-      .limit(1)
-      .maybeSingle();
+    const queueDoc = queueQuery.docs[0];
+    const qData = queueDoc.data();
 
-    if (existingEntry) {
+    // Check if queue is open
+    if (qData.isOpen === false) {
+      return NextResponse.json(
+        { message: 'This queue is currently closed and not accepting new entries.' },
+        { status: 400 }
+      );
+    }
+
+    const queueRef = queueDoc.ref;
+    const entriesRef = queueRef.collection('entries');
+
+    // 2. Check if customer is already active in this queue (waiting or called)
+    const existingWaiting = await entriesRef
+      .where('customerName', '==', trimmedName)
+      .where('status', 'in', ['waiting', 'called'])
+      .limit(1)
+      .get();
+
+    if (!existingWaiting.empty) {
+      const existingDoc = existingWaiting.docs[0];
+      const data = existingDoc.data();
       return NextResponse.json({
-        _id: existingEntry.id.toString(),
-        customerName: existingEntry.customer_name,
-        queueId: existingEntry.queue_id.toString(),
-        token: existingEntry.token,
-        status: existingEntry.status,
-        joinedAt: existingEntry.joined_at,
+        _id: existingDoc.id,
+        customerName: data.customerName,
+        queueId: queueDoc.id,
+        queueCode: cleanCode,
+        queueName: qData.queueName || 'Queue',
+        token: data.token,
+        status: data.status,
+        joinedAt: data.joinedAt,
       });
     }
 
-    // 2. Increment lastTokenNumber
-    const nextTokenNumber = queue.last_token_number + 1;
-    const { data: updatedQueue, error: updateError } = await supabaseAdmin
-      .from('queues')
-      .update({ last_token_number: nextTokenNumber })
-      .eq('id', queue.id)
-      .select('*')
-      .single();
+    // 3. Atomically increment lastTokenNumber and create entry within a Firestore Transaction
+    const newEntry = await adminDb.runTransaction(async (transaction: Transaction) => {
+      const freshQueueSnap = await transaction.get(queueRef);
+      if (!freshQueueSnap.exists) {
+        throw new Error('Queue not found during transaction');
+      }
 
-    if (updateError || !updatedQueue) {
-      return NextResponse.json({ message: 'Error generating token' }, { status: 500 });
-    }
+      const freshQueue = freshQueueSnap.data()!;
+      if (freshQueue.isOpen === false) {
+        throw new Error('This queue is currently closed.');
+      }
 
-    // 3. Format Token (e.g. A001, B015)
-    const paddedNum = String(updatedQueue.last_token_number).padStart(3, '0');
-    const token = `${updatedQueue.token_prefix}${paddedNum}`;
+      const currentLastToken = freshQueue.lastTokenNumber || 0;
+      const nextTokenNumber = currentLastToken + 1;
 
-    // 4. Create Entry
-    const { data: entry, error: createError } = await supabaseAdmin
-      .from('queue_entries')
-      .insert({
-        customer_name: trimmedName,
-        queue_id: queue.id,
+      const tokenPrefix = freshQueue.tokenPrefix || 'A';
+      const paddedNum = String(nextTokenNumber).padStart(3, '0');
+      const token = `${tokenPrefix}${paddedNum}`;
+
+      const entryDocRef = entriesRef.doc();
+      const joinedAt = new Date().toISOString();
+
+      const entryPayload = {
+        customerName: trimmedName,
+        queueId: queueDoc.id,
         token,
         status: 'waiting',
-        joined_at: new Date().toISOString(),
-      })
-      .select('*')
-      .single();
+        joinedAt,
+        calledAt: null,
+        servedAt: null,
+        isRemote: false,
+        ownerUid: user?._id || null,
+        ownerDeviceId: deviceId || null,
+      };
 
-    if (createError || !entry) {
-      return NextResponse.json({ message: createError?.message || 'Error joining queue' }, { status: 500 });
-    }
+      transaction.update(queueRef, { lastTokenNumber: nextTokenNumber });
+      transaction.set(entryDocRef, entryPayload);
 
-    // 5. Broadcast real-time update via socket
+      return {
+        _id: entryDocRef.id,
+        ...entryPayload,
+      };
+    });
+
+    // 4. Broadcast real-time update via Socket.IO
     const io = (global as any).io;
     if (io) {
-      io.to(queue.id.toString()).emit('queue_updated', { queueId: queue.id });
+      io.to(queueDoc.id.toString()).emit('queue_updated', { queueId: queueDoc.id });
     }
 
-    return NextResponse.json({
-      _id: entry.id.toString(),
-      customerName: entry.customer_name,
-      queueId: entry.queue_id.toString(),
-      token: entry.token,
-      status: entry.status,
-      joinedAt: entry.joined_at,
-    }, { status: 201 });
-  } catch (error) {
-    return NextResponse.json({ message: (error as Error).message }, { status: 500 });
+    return NextResponse.json(
+      {
+        _id: newEntry._id,
+        customerName: newEntry.customerName,
+        queueId: newEntry.queueId,
+        queueCode: cleanCode,
+        queueName: qData.queueName || 'Queue',
+        token: newEntry.token,
+        status: newEntry.status,
+        joinedAt: newEntry.joinedAt,
+      },
+      { status: 201 }
+    );
+  } catch (error: any) {
+    console.error('[POST /api/entries/join/[code]] Error:', error);
+    return NextResponse.json({ message: error?.message || 'Error joining queue' }, { status: 500 });
   }
 }

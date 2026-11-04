@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import './globals.css';
 import { AuthProvider } from '@/context/AuthContext';
 import { SocketProvider } from '@/context/SocketContext';
+import { CustomerProvider } from '@/context/CustomerContext';
 
 export const metadata: Metadata = {
   title: 'QFlow — Smart Queue Management System',
@@ -18,7 +19,9 @@ export default function RootLayout({
       <body>
         <AuthProvider>
           <SocketProvider>
-            {children}
+            <CustomerProvider>
+              {children}
+            </CustomerProvider>
           </SocketProvider>
         </AuthProvider>
       </body>
