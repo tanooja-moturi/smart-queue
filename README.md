@@ -89,30 +89,6 @@ QFlow is a **full-stack, real-time virtual queue management system** that elimin
 
 ---
 
-# ⚙️ Environment Variables
-
-Create `.env.local` in the project root:
-
-```env
-PORT=3000
-NEXT_PUBLIC_SOCKET_URL=http://localhost:3000
-
-# Firebase Client SDK Configuration (Firebase Console -> Project Settings -> General -> Web App)
-NEXT_PUBLIC_FIREBASE_API_KEY=your_firebase_web_api_key
-NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=qflow-645af.firebaseapp.com
-NEXT_PUBLIC_FIREBASE_PROJECT_ID=qflow-645af
-NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=qflow-645af.firebasestorage.app
-NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=your_messaging_sender_id
-NEXT_PUBLIC_FIREBASE_APP_ID=your_firebase_app_id
-
-# Firebase Admin SDK Credentials (Firebase Console -> Project Settings -> Service Accounts -> Generate new private key)
-FIREBASE_PROJECT_ID=qflow-645af
-FIREBASE_CLIENT_EMAIL=firebase-adminsdk-xxxxx@qflow-645af.iam.gserviceaccount.com
-FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC...\n-----END PRIVATE KEY-----\n"
-```
-
----
-
 # 👨‍💼 Provisioning the First Staff Account
 
 Self-registered users in QFlow are always assigned the `customer` role for security.
