@@ -9,6 +9,10 @@ import {
   onIdTokenChanged,
   updateProfile,
   signInWithPopup,
+  sendPasswordResetEmail,
+  updatePassword,
+  EmailAuthProvider,
+  reauthenticateWithCredential,
   User as FirebaseUser,
 } from 'firebase/auth';
 import { auth, googleProvider } from '@/lib/firebase';
@@ -18,6 +22,7 @@ export interface User {
   _id: string;
   name: string;
   email: string;
+  phoneNumber?: string;
   role: string;
   photoURL?: string;
 }
@@ -25,10 +30,12 @@ export interface User {
 interface AuthContextType {
   user: User | null;
   loading: boolean;
-  login: (email: string, password: string) => Promise<void>;
-  loginWithGoogle: () => Promise<User | null>;
+  login: (email: string, password: string, portal?: 'staff' | 'customer') => Promise<User>;
+  loginWithGoogle: (portal?: 'staff' | 'customer') => Promise<User | null>;
   register: (name: string, email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
+  sendPasswordReset: (email: string) => Promise<void>;
+  changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -49,8 +56,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser: FirebaseUser | null) => {
       if (firebaseUser) {
-        // If a registration / google-login flow is actively in progress, let that
-        // flow handle setUser() itself with the authoritative role from the server.
+        // If an active auth flow is in progress, let that flow handle setUser()
         if (authFlowActiveRef.current) return;
         try {
           const token = await firebaseUser.getIdToken();
@@ -60,15 +66,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           setUser(userData);
         } catch (err) {
           console.error('[AuthContext] Failed to load user profile:', err);
-          // Fallback to minimal Firebase user: read role from token claims if available.
           const token = await firebaseUser.getIdToken().catch(() => '');
           if (token) localStorage.setItem('token', token);
           const idTokenResult = await firebaseUser.getIdTokenResult().catch(() => null);
           const fallbackRole = (idTokenResult?.claims?.role as string) || 'customer';
+          const phone = firebaseUser.phoneNumber || undefined;
+          const name =
+            firebaseUser.displayName ||
+            (phone ? `Customer (${phone.slice(-4)})` : (firebaseUser.email ? firebaseUser.email.split('@')[0] : 'Customer'));
           setUser({
             _id: firebaseUser.uid,
-            name: firebaseUser.displayName || (firebaseUser.email ? firebaseUser.email.split('@')[0] : 'User'),
+            name,
             email: firebaseUser.email || '',
+            phoneNumber: phone,
             role: fallbackRole,
             photoURL: firebaseUser.photoURL || undefined,
           });
@@ -94,22 +104,35 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, []);
 
-  // ── Email / Password login (Staff Portal) ──────────────────────────────────
-  const login = React.useCallback(async (email: string, password: string) => {
+  // ── Email / Password login (Customer & Staff) ─────────────────────────────
+  const login = React.useCallback(async (email: string, password: string, portal: 'staff' | 'customer' = 'staff'): Promise<User> => {
     setLoading(true);
+    authFlowActiveRef.current = true;
     try {
       const userCredential = await signInWithEmailAndPassword(auth, email.trim(), password);
       const token = await userCredential.user.getIdToken(true);
       localStorage.setItem('token', token);
-      const userData = await apiRequest('/auth/me');
+
+      // Authenticate with backend: assigns role based on selected portal
+      const userData: User = await apiRequest('/auth/login', 'POST', { portal });
+
+      try {
+        const refreshedToken = await userCredential.user.getIdToken(true);
+        localStorage.setItem('token', refreshedToken);
+      } catch {
+        // Non-fatal
+      }
+
       setUser(userData);
+      return userData;
     } catch (err: any) {
       setUser(null);
       let errorMsg = 'Invalid email or password';
       if (
         err.code === 'auth/invalid-credential' ||
         err.code === 'auth/wrong-password' ||
-        err.code === 'auth/user-not-found'
+        err.code === 'auth/user-not-found' ||
+        err.code === 'auth/invalid-email'
       ) {
         errorMsg = 'Invalid email or password';
       } else if (err.code === 'auth/too-many-requests') {
@@ -119,12 +142,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
       throw new Error(errorMsg);
     } finally {
+      authFlowActiveRef.current = false;
       setLoading(false);
     }
   }, []);
 
   // ── Google login (Customer & Staff) ────────────────────────────────────────
-  const loginWithGoogle = React.useCallback(async (): Promise<User | null> => {
+  const loginWithGoogle = React.useCallback(async (portal: 'staff' | 'customer' = 'customer'): Promise<User | null> => {
     setLoading(true);
     authFlowActiveRef.current = true;
     try {
@@ -132,9 +156,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const token = await result.user.getIdToken(true);
       localStorage.setItem('token', token);
 
-      // Authenticate with backend: creates 'customer' for new users,
-      // preserves existing 'staff'/'admin'/'customer' roles without overwriting.
+      // Authenticate with backend: assigns role based on selected portal
+      // - Staff Login portal -> role: "staff"
+      // - Customer Login portal -> role: "customer"
       const userData: User = await apiRequest('/auth/google', 'POST', {
+        portal,
         name: result.user.displayName || (result.user.email ? result.user.email.split('@')[0] : 'User'),
         email: result.user.email || '',
         photoURL: result.user.photoURL || '',
@@ -218,6 +244,69 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, []);
 
+  // ── Forgot Password (Send Reset Email) ─────────────────────────────────────
+  const sendPasswordReset = React.useCallback(async (email: string): Promise<void> => {
+    if (!email || !email.trim()) {
+      throw new Error('Please enter your email address.');
+    }
+    try {
+      await sendPasswordResetEmail(auth, email.trim());
+    } catch (err: any) {
+      let errorMsg = 'Failed to send password reset email.';
+      if (err.code === 'auth/invalid-email') {
+        errorMsg = 'Please provide a valid email address.';
+      } else if (err.code === 'auth/user-not-found') {
+        errorMsg = 'No account found with this email address.';
+      } else if (err.code === 'auth/too-many-requests') {
+        errorMsg = 'Too many requests. Please wait a few moments and try again.';
+      } else if (err.message) {
+        errorMsg = err.message;
+      }
+      throw new Error(errorMsg);
+    }
+  }, []);
+
+  // ── Change Password (Authenticated User) ───────────────────────────────────
+  const changePassword = React.useCallback(async (currentPassword: string, newPassword: string): Promise<void> => {
+    const currentUser = auth.currentUser;
+    if (!currentUser) {
+      throw new Error('You must be signed in to change your password.');
+    }
+
+    const isPasswordProvider = currentUser.providerData.some((p) => p.providerId === 'password');
+    if (!isPasswordProvider) {
+      throw new Error('Your account is signed in with Google. Password change is not applicable for Google sign-in accounts.');
+    }
+
+    if (!currentPassword) {
+      throw new Error('Current password is required.');
+    }
+    if (!newPassword || newPassword.length < 6) {
+      throw new Error('New password must be at least 6 characters long.');
+    }
+
+    try {
+      const email = currentUser.email;
+      if (!email) throw new Error('Email address not found on user profile.');
+
+      const credential = EmailAuthProvider.credential(email, currentPassword);
+      await reauthenticateWithCredential(currentUser, credential);
+      await updatePassword(currentUser, newPassword);
+    } catch (err: any) {
+      let errorMsg = 'Failed to update password.';
+      if (err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
+        errorMsg = 'Current password is incorrect.';
+      } else if (err.code === 'auth/weak-password') {
+        errorMsg = 'New password must be at least 6 characters long.';
+      } else if (err.code === 'auth/requires-recent-login') {
+        errorMsg = 'For security, please sign out and sign back in before changing your password.';
+      } else if (err.message) {
+        errorMsg = err.message;
+      }
+      throw new Error(errorMsg);
+    }
+  }, []);
+
   // ── Logout ─────────────────────────────────────────────────────────────────
   const logout = React.useCallback(async () => {
     try {
@@ -230,8 +319,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const contextValue = React.useMemo(
-    () => ({ user, loading, login, loginWithGoogle, register, logout }),
-    [user, loading, login, loginWithGoogle, register, logout]
+    () => ({
+      user,
+      loading,
+      login,
+      loginWithGoogle,
+      register,
+      logout,
+      sendPasswordReset,
+      changePassword,
+    }),
+    [user, loading, login, loginWithGoogle, register, logout, sendPasswordReset, changePassword]
   );
 
   return (

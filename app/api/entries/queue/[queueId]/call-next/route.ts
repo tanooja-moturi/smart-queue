@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireStaffUser } from '@/lib/authMiddleware';
+import { verifyQueueAccess } from '@/lib/queueAuth';
 import { adminDb } from '@/lib/firebaseAdmin';
 import { QueryDocumentSnapshot } from 'firebase-admin/firestore';
 
-// POST /api/entries/queue/:queueId/call-next — protected, staff-only
+// POST /api/entries/queue/:queueId/call-next — protected, staff-only (ownerId check enforced)
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ queueId: string }> }
@@ -15,18 +16,12 @@ export async function POST(
     }
 
     const { queueId } = await params;
-    const queueRef = adminDb.collection('queues').doc(queueId);
-    const queueDoc = await queueRef.get();
-
-    if (!queueDoc.exists) {
-      return NextResponse.json({ message: 'Queue not found' }, { status: 404 });
+    const access = await verifyQueueAccess(queueId, user);
+    if (!access.authorized || !access.queueRef) {
+      return NextResponse.json({ message: access.message || 'Unauthorized' }, { status: access.status });
     }
 
-    const queueData = queueDoc.data();
-    if (queueData?.userId !== user._id) {
-      return NextResponse.json({ message: 'Unauthorized' }, { status: 403 });
-    }
-
+    const queueRef = access.queueRef;
     const entriesRef = queueRef.collection('entries');
     const nowIso = new Date().toISOString();
     const batch = adminDb.batch();

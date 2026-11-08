@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { adminDb } from '@/lib/firebaseAdmin';
 import { DocumentSnapshot, QueryDocumentSnapshot } from 'firebase-admin/firestore';
 
+export const dynamic = 'force-dynamic';
+
 // GET /api/entries/track/:token — public, no auth required
 export async function GET(
   req: NextRequest,

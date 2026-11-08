@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { adminDb } from '@/lib/firebaseAdmin';
 import { getAuthUser } from '@/lib/authMiddleware';
 
+export const dynamic = 'force-dynamic';
+
 /**
  * GET /api/customer/active-tickets?deviceId=...
  * Returns active tickets (status: 'waiting' or 'called') for the authenticated user or guest device.

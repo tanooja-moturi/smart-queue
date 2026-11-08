@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireStaffUser } from '@/lib/authMiddleware';
+import { verifyQueueAccess } from '@/lib/queueAuth';
 import { adminDb } from '@/lib/firebaseAdmin';
 import { QueryDocumentSnapshot } from 'firebase-admin/firestore';
 
-// DELETE /api/queues/:id — protected, staff-only
+// DELETE /api/queues/:id — protected, staff-only (ownerId check enforced)
 export async function DELETE(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -15,17 +16,12 @@ export async function DELETE(
     }
 
     const { id } = await params;
-    const queueRef = adminDb.collection('queues').doc(id);
-    const queueDoc = await queueRef.get();
-
-    if (!queueDoc.exists) {
-      return NextResponse.json({ message: 'Queue not found' }, { status: 404 });
+    const access = await verifyQueueAccess(id, user);
+    if (!access.authorized || !access.queueRef) {
+      return NextResponse.json({ message: access.message || 'Unauthorized' }, { status: access.status });
     }
 
-    const queueData = queueDoc.data();
-    if (queueData?.userId !== user._id) {
-      return NextResponse.json({ message: 'Unauthorized' }, { status: 403 });
-    }
+    const queueRef = access.queueRef;
 
     // Cascade delete: delete all documents in entries subcollection
     const entriesSnapshot = await queueRef.collection('entries').get();

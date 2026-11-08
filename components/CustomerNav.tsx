@@ -5,13 +5,14 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
 import { useCustomer } from '@/context/CustomerContext';
-import { Users, QrCode, Home, LogOut, LogIn } from 'lucide-react';
+import { Users, QrCode, Home, LogOut, LogIn, Phone } from 'lucide-react';
 
 interface CustomerNavProps {
   onOpenScanner?: () => void;
+  hideAuthActions?: boolean;
 }
 
-export const CustomerNav: React.FC<CustomerNavProps> = ({ onOpenScanner }) => {
+export const CustomerNav: React.FC<CustomerNavProps> = ({ onOpenScanner, hideAuthActions = false }) => {
   const router = useRouter();
   const { user, logout } = useAuth();
   const { clearCustomerSession } = useCustomer();
@@ -25,7 +26,7 @@ export const CustomerNav: React.FC<CustomerNavProps> = ({ onOpenScanner }) => {
   };
 
   return (
-    <nav className="border-b border-white/5 bg-[#090d16]/80 backdrop-blur-md px-6 py-4 sticky top-0 z-30">
+    <nav className="border-b border-white/5 bg-[#090d16]/80 backdrop-blur-md px-4 sm:px-6 py-4 sticky top-0 z-30">
       <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
         {/* Brand */}
         <Link href="/" className="flex items-center gap-2.5 group">
@@ -37,13 +38,13 @@ export const CustomerNav: React.FC<CustomerNavProps> = ({ onOpenScanner }) => {
               QFlow
             </span>
             <span className="text-[10px] text-gray-500 font-mono tracking-wider uppercase block">
-              Customer Login
+              Customer Portal
             </span>
           </div>
         </Link>
 
-        {/* Action Links & Return to Home / Exit */}
-        <div className="flex items-center gap-2 sm:gap-3">
+        {/* Action Links & Navigation */}
+        <div className="flex items-center gap-2 sm:gap-2.5">
           {/* Return to Home Page button */}
           <Link
             href="/"
@@ -65,21 +66,16 @@ export const CustomerNav: React.FC<CustomerNavProps> = ({ onOpenScanner }) => {
             </button>
           )}
 
-          {/* User profile indicator if signed in */}
-          {user ? (
+          {/* If a staff account is logged in, show their badge & logout */}
+          {user && (
             <>
               <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-white/5 border border-white/10 text-xs">
-                {user.photoURL ? (
-                  <img
-                    src={user.photoURL}
-                    alt={user.name}
-                    className="w-5 h-5 rounded-full object-cover"
-                    referrerPolicy="no-referrer"
-                  />
+                {user.phoneNumber ? (
+                  <Phone className="w-3.5 h-3.5 text-brand-400 shrink-0" />
                 ) : (
                   <span className="w-2 h-2 rounded-full bg-emerald-400" />
                 )}
-                <span className="text-gray-200 font-medium truncate max-w-[120px]">
+                <span className="text-gray-200 font-medium truncate max-w-[130px]">
                   {user.name}
                 </span>
                 <span className="text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-brand-500/20 text-brand-300">
@@ -87,7 +83,6 @@ export const CustomerNav: React.FC<CustomerNavProps> = ({ onOpenScanner }) => {
                 </span>
               </div>
 
-              {/* Logout button */}
               <button
                 onClick={handleExitSession}
                 className="px-3 py-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-300 hover:text-red-200 transition text-xs font-semibold flex items-center gap-1.5"
@@ -97,16 +92,6 @@ export const CustomerNav: React.FC<CustomerNavProps> = ({ onOpenScanner }) => {
                 <span>Log Out</span>
               </button>
             </>
-          ) : (
-            /* Sign In link */
-            <Link
-              href="/login"
-              className="px-3.5 py-2 bg-brand-600 hover:bg-brand-500 text-white rounded-xl transition text-xs font-semibold flex items-center gap-1.5 shadow-md shadow-brand-600/20"
-              title="Sign in with Google or account"
-            >
-              <LogIn className="w-4 h-4" />
-              <span>Sign In</span>
-            </Link>
           )}
         </div>
       </div>

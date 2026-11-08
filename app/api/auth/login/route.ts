@@ -28,16 +28,17 @@ export async function POST(req: NextRequest) {
         console.warn('[login] Failed to fetch Firebase Auth user record:', authErr);
       }
 
-      // Preserve existing role: admin is preserved, staff is preserved, customer is preserved.
+      // Determine authoritative role based on portal context:
+      // Staff portal login -> automatically assigns 'staff' (or 'admin')
+      // Customer portal login -> automatically assigns 'customer' (or 'admin')
+      const portal = body.portal === 'customer' ? 'customer' : 'staff';
       let role: string;
       if (authRole === 'admin' || firestoreRole === 'admin') {
         role = 'admin';
-      } else if (firestoreRole) {
-        role = firestoreRole;
-      } else if (authRole) {
-        role = authRole;
-      } else {
+      } else if (portal === 'staff') {
         role = 'staff';
+      } else {
+        role = 'customer';
       }
 
       // Keep both stores in sync
@@ -132,16 +133,17 @@ export async function POST(req: NextRequest) {
       console.warn('[login] Failed to fetch Firebase Auth user record:', authErr);
     }
 
-    // Preserve existing role: admin is preserved, staff is preserved, customer is preserved.
+    // Determine authoritative role based on portal context:
+    // Staff portal login -> automatically assigns 'staff' (or 'admin')
+    // Customer portal login -> automatically assigns 'customer' (or 'admin')
+    const portal = body.portal === 'customer' ? 'customer' : 'staff';
     let role: string;
     if (authRole === 'admin' || firestoreRole === 'admin') {
       role = 'admin';
-    } else if (firestoreRole) {
-      role = firestoreRole;
-    } else if (authRole) {
-      role = authRole;
-    } else {
+    } else if (portal === 'staff') {
       role = 'staff';
+    } else {
+      role = 'customer';
     }
 
     // Keep both stores in sync

@@ -30,8 +30,12 @@ export default function LoginPage() {
     setError(null); setSuccessMessage(null); setSubmitting(true);
     try {
       if (activeTab === 'login') {
-        await login(email, password);
-        router.push('/dashboard');
+        const loggedUser = await login(email, password, 'staff');
+        if (loggedUser.role === 'customer') {
+          router.push('/customer');
+        } else {
+          router.push('/dashboard');
+        }
       } else {
         if (password.length < 6) throw new Error('Password must be at least 6 characters long.');
         if (password !== confirmPassword) throw new Error('Passwords do not match.');
@@ -52,7 +56,7 @@ export default function LoginPage() {
     setSuccessMessage(null);
     setGoogleLoading(true);
     try {
-      const loggedUser = await loginWithGoogle();
+      const loggedUser = await loginWithGoogle('staff');
       if (!loggedUser) {
         // Sign-in dismissed or cancelled by the user
         return;

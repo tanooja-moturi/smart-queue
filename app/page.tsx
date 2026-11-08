@@ -46,7 +46,7 @@ export default function HomePage() {
 
         {/* Portals Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-4xl mx-auto text-left">
-          {/* 1. Customer Login Card */}
+          {/* 1. Customer Portal Card */}
           <div
             onClick={() => router.push('/customer')}
             className="group glass p-8 sm:p-9 rounded-3xl border border-brand-500/25 bg-gradient-to-b from-brand-500/5 hover:from-brand-500/10 to-transparent hover:border-brand-500/50 transition-all duration-300 cursor-pointer flex flex-col justify-between hover:-translate-y-1 shadow-xl hover:shadow-brand-500/10"
@@ -62,7 +62,7 @@ export default function HomePage() {
               </div>
 
               <h2 className="text-2xl sm:text-3xl font-black text-white mb-3 tracking-tight group-hover:text-brand-300 transition-colors">
-                Customer Login
+                Customer Portal
               </h2>
               <p className="text-gray-400 text-sm leading-relaxed mb-6">
                 Join live queues, scan in-store QR codes, track your line position in real-time on your phone, and manage your digital queue tickets.
@@ -71,15 +71,15 @@ export default function HomePage() {
               <div className="space-y-2 mb-8 text-xs text-gray-300">
                 <div className="flex items-center gap-2.5">
                   <span className="w-2 h-2 rounded-full bg-brand-400 shrink-0"></span>
+                  <span>Direct instant access — no account or login required</span>
+                </div>
+                <div className="flex items-center gap-2.5">
+                  <span className="w-2 h-2 rounded-full bg-brand-400 shrink-0"></span>
                   <span>Join queues by code or scan QR code</span>
                 </div>
                 <div className="flex items-center gap-2.5">
                   <span className="w-2 h-2 rounded-full bg-brand-400 shrink-0"></span>
                   <span>Live tracking with wait times & people ahead</span>
-                </div>
-                <div className="flex items-center gap-2.5">
-                  <span className="w-2 h-2 rounded-full bg-brand-400 shrink-0"></span>
-                  <span>Freedom to leave the queue at any time</span>
                 </div>
               </div>
             </div>

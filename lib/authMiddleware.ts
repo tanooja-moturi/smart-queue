@@ -5,6 +5,7 @@ export interface AuthUser {
   _id: string;
   name: string;
   email: string;
+  phoneNumber?: string;
   role: string;
   photoURL?: string;
 }
@@ -51,12 +52,15 @@ export const getAuthUser = async (
   try {
     const decodedToken = await adminAuth.verifyIdToken(token);
     const uid = decodedToken.uid;
-    let name = decodedToken.name || (decodedToken.email ? decodedToken.email.split('@')[0] : 'User');
-    const email = decodedToken.email || '';
+    let phoneNumber = decodedToken.phone_number || undefined;
+    let name =
+      decodedToken.name ||
+      (decodedToken.email ? decodedToken.email.split('@')[0] : (phoneNumber ? `Customer (${phoneNumber.slice(-4)})` : 'User'));
+    let email = decodedToken.email || '';
     let photoURL = decodedToken.picture || undefined;
     let role = (decodedToken.role as string) || '';
 
-    // If role claim is missing from the token, fetch authoritative role from Firestore
+    // If role claim is missing from the token, fetch authoritative Firestore role
     if (!role) {
       const [userDoc, authUserRecord] = await Promise.all([
         adminDb.collection('users').doc(uid).get().catch((err) => {
@@ -74,9 +78,9 @@ export const getAuthUser = async (
       const claimRole = authUserRecord?.customClaims?.role || null;
 
       // Authoritative role resolution:
-      // 1. Firestore document role
+      // 1. Existing Firestore document role
       // 2. Auth custom claim
-      // 3. Fallback default to 'customer'
+      // 3. Default fallback to 'customer'
       if (firestoreRole) {
         role = firestoreRole;
       } else if (claimRole) {
@@ -88,16 +92,28 @@ export const getAuthUser = async (
       if (firestoreData?.name) {
         name = firestoreData.name;
       }
+      if (firestoreData?.email) {
+        email = firestoreData.email;
+      }
+      if (firestoreData?.phoneNumber) {
+        phoneNumber = firestoreData.phoneNumber;
+      }
       if (firestoreData?.photoURL) {
         photoURL = firestoreData.photoURL;
       }
 
-      // Sync custom claims if needed
+      // Sync stores if role needs alignment
       if (claimRole !== role) {
         adminAuth.setCustomUserClaims(uid, {
           ...(authUserRecord?.customClaims || {}),
           role,
         }).catch(() => {});
+      }
+      if (firestoreRole !== role) {
+        adminDb.collection('users').doc(uid).set(
+          { role, updatedAt: new Date().toISOString() },
+          { merge: true }
+        ).catch(() => {});
       }
     }
 
@@ -105,6 +121,7 @@ export const getAuthUser = async (
       _id: uid,
       name,
       email,
+      phoneNumber,
       role,
       photoURL,
     };

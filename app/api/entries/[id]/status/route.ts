@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireStaffUser } from '@/lib/authMiddleware';
+import { verifyQueueAccess } from '@/lib/queueAuth';
 import { adminDb } from '@/lib/firebaseAdmin';
 import { DocumentReference } from 'firebase-admin/firestore';
 
-// PATCH /api/entries/:id/status — protected, staff-only
+// PATCH /api/entries/:id/status — protected, staff-only (queue ownerId check enforced)
 export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -27,24 +28,31 @@ export async function PATCH(
     let targetQueueId: string | null = null;
 
     if (requestedQueueId) {
-      const qRef = adminDb.collection('queues').doc(requestedQueueId);
-      const eRef = qRef.collection('entries').doc(id);
-      const [qDoc, eSnap] = await Promise.all([qRef.get(), eRef.get()]);
-      if (qDoc.exists && qDoc.data()?.userId === user._id && eSnap.exists) {
+      const access = await verifyQueueAccess(requestedQueueId, user);
+      if (!access.authorized || !access.queueRef) {
+        return NextResponse.json({ message: access.message || 'Unauthorized' }, { status: access.status });
+      }
+      const eRef = access.queueRef.collection('entries').doc(id);
+      const eSnap = await eRef.get();
+      if (eSnap.exists) {
         targetEntryRef = eRef;
         targetEntryData = eSnap.data();
         targetQueueId = requestedQueueId;
       }
     }
 
-    // If not found via requestedQueueId, search across the staff user's owned queues
+    // If not found via requestedQueueId, search only across queues owned by or assigned to this staff user
     if (!targetEntryRef) {
-      const userQueues = await adminDb
-        .collection('queues')
-        .where('userId', '==', user._id)
-        .get();
+      const [byOwner, byLegacyUser] = await Promise.all([
+        adminDb.collection('queues').where('ownerId', '==', user._id).get(),
+        adminDb.collection('queues').where('userId', '==', user._id).get(),
+      ]);
 
-      for (const qDoc of userQueues.docs) {
+      const seen = new Map<string, any>();
+      for (const doc of byOwner.docs) seen.set(doc.id, doc);
+      for (const doc of byLegacyUser.docs) seen.set(doc.id, doc);
+
+      for (const qDoc of seen.values()) {
         const eRef = qDoc.ref.collection('entries').doc(id);
         const eSnap = await eRef.get();
         if (eSnap.exists) {

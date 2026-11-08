@@ -3,6 +3,8 @@ import { requireStaffUser } from '@/lib/authMiddleware';
 import { adminDb } from '@/lib/firebaseAdmin';
 import { QueryDocumentSnapshot } from 'firebase-admin/firestore';
 
+export const dynamic = 'force-dynamic';
+
 // GET /api/queues — list all queues with stats (staff-only)
 export async function GET(req: NextRequest) {
   try {
@@ -11,13 +13,26 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ message: error || 'Not authorized' }, { status: status || 401 });
     }
 
-    const queuesSnapshot = await adminDb
-      .collection('queues')
-      .where('userId', '==', user._id)
-      .get();
+    // Query only queues owned by the currently authenticated staff member (or assigned)
+    let queueDocs: QueryDocumentSnapshot[] = [];
+
+    if (user.role === 'admin') {
+      const allQueues = await adminDb.collection('queues').get();
+      queueDocs = allQueues.docs;
+    } else {
+      const [byOwner, byLegacyUser] = await Promise.all([
+        adminDb.collection('queues').where('ownerId', '==', user._id).get(),
+        adminDb.collection('queues').where('userId', '==', user._id).get(),
+      ]);
+
+      const seen = new Map<string, QueryDocumentSnapshot>();
+      for (const doc of byOwner.docs) seen.set(doc.id, doc);
+      for (const doc of byLegacyUser.docs) seen.set(doc.id, doc);
+      queueDocs = Array.from(seen.values());
+    }
 
     const queuesWithStats = await Promise.all(
-      queuesSnapshot.docs.map(async (doc: QueryDocumentSnapshot) => {
+      queueDocs.map(async (doc: QueryDocumentSnapshot) => {
         const queueData = doc.data();
         const entriesRef = doc.ref.collection('entries');
 
@@ -110,6 +125,7 @@ export async function POST(req: NextRequest) {
       averageServiceTime: Number(averageServiceTime),
       tokenPrefix,
       lastTokenNumber: 0,
+      ownerId: user._id,
       userId: user._id,
       createdAt: new Date().toISOString(),
       // New config fields

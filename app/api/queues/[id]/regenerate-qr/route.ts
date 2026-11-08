@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireStaffUser } from '@/lib/authMiddleware';
+import { verifyQueueAccess } from '@/lib/queueAuth';
 import { adminDb } from '@/lib/firebaseAdmin';
 import { WriteBatch } from 'firebase-admin/firestore';
 
@@ -23,23 +24,18 @@ export async function POST(
     }
 
     const { id } = await params;
-    const queueRef = adminDb.collection('queues').doc(id);
-    const queueDoc = await queueRef.get();
-
-    if (!queueDoc.exists) {
-      return NextResponse.json({ message: 'Queue not found' }, { status: 404 });
-    }
-    if (queueDoc.data()?.userId !== user._id) {
-      return NextResponse.json({ message: 'Unauthorized — you do not own this queue' }, { status: 403 });
+    const access = await verifyQueueAccess(id, user);
+    if (!access.authorized || !access.queueRef || !access.queueData) {
+      return NextResponse.json({ message: access.message || 'Unauthorized' }, { status: access.status });
     }
 
-    const oldCredential = queueDoc.data()?.publicCredential || '';
-    const oldVersion = queueDoc.data()?.qrVersion || 1;
+    const oldCredential = access.queueData.publicCredential || '';
+    const oldVersion = access.queueData.qrVersion || 1;
     const newCredential = crypto.randomUUID();
     const newVersion = oldVersion + 1;
 
     // Update queue with new credential
-    await queueRef.update({ publicCredential: newCredential, qrVersion: newVersion });
+    await access.queueRef.update({ publicCredential: newCredential, qrVersion: newVersion });
 
     // Mark all saved queues that used the old credential as invalid
     if (oldCredential) {

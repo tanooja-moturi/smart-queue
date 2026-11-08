@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { adminDb } from '@/lib/firebaseAdmin';
 import { getAuthUser } from '@/lib/authMiddleware';
 
+export const dynamic = 'force-dynamic';
+
 /**
  * GET /api/customer/saved-queues?deviceId=...
  * Returns all saved queues for the authenticated user or guest device.

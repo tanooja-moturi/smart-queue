@@ -35,7 +35,9 @@ service cloud.firestore {
     // or be strictly restricted to verified queue owners.
     match /queues/{queueId} {
       allow read: if true;
-      allow create, update, delete: if isStaff() && isOwner(request.resource.data.userId);
+      allow create: if isStaff() && (isOwner(request.resource.data.ownerId) || isOwner(request.resource.data.userId));
+      allow update: if isStaff() && (isOwner(request.resource.data.ownerId) || isOwner(resource.data.ownerId) || isOwner(resource.data.userId));
+      allow delete: if isStaff() && (isOwner(resource.data.ownerId) || isOwner(resource.data.userId));
 
       // --- Queue Entries Subcollection ---
       // Public can read entries for live tracking (status, token number, wait time).

@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { adminDb } from '@/lib/firebaseAdmin';
 
+export const dynamic = 'force-dynamic';
+
 // GET /api/queues/public/:code — public, no auth required
 export async function GET(
   req: NextRequest,

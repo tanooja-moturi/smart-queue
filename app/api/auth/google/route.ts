@@ -7,18 +7,15 @@ import { adminAuth, adminDb } from '@/lib/firebaseAdmin';
  * Secure Google Sign-In backend handler.
  *
  * Requirements:
- * 1. Verifies the Firebase ID token from the Bearer header or body.
- * 2. Extracts authenticated UID, email, displayName, and profile photo.
- * 3. Checks Firestore 'users' collection by UID (preventing duplicate documents).
- * 4. If user exists:
- *    - Retrieves and preserves existing role ('staff', 'admin', 'customer') without overwriting.
- *    - Preserves existing profile information.
- *    - Updates lastLoginAt and non-destructively updates photoURL if missing.
- *    - Synchronizes Firebase Auth custom claims to match authoritative role.
- * 5. If user does not exist:
- *    - Creates a new user profile document in Firestore with default role 'customer'.
- *    - Assigns Firebase Auth custom claims { role: 'customer' }.
- * 6. Returns the authoritative profile to the client.
+ * 1. Verifies the Firebase ID token from Bearer header or body.
+ * 2. Automatic Role Assignment:
+ *    - Signing in via Staff Login (portal: 'staff') -> assigns role: "staff" (or "admin").
+ *    - Signing in via Customer Login (portal: 'customer') -> assigns role: "customer".
+ *    - No hardcoded email allowlist or STAFF_EMAILS required.
+ *    - Preserves "admin" role if user is an existing admin.
+ * 3. Prevents duplicate user documents by keying on UID.
+ * 4. Synchronizes Firebase Auth custom claims to match authoritative role.
+ * 5. Returns profile { _id, name, email, photoURL, role, isNewUser }.
  */
 export async function POST(req: NextRequest) {
   try {
@@ -35,97 +32,89 @@ export async function POST(req: NextRequest) {
     // 1. Verify Firebase ID token
     const decoded = await adminAuth.verifyIdToken(token);
     const uid = decoded.uid;
-    const email = decoded.email || body.email || '';
+    const email = (decoded.email || body.email || '').trim().toLowerCase();
     const name =
       decoded.name ||
       body.name ||
       (email ? email.split('@')[0] : 'User');
     const photoURL = decoded.picture || body.photoURL || '';
 
+    // Determine target portal (staff vs customer)
+    const portal = body.portal === 'staff' ? 'staff' : 'customer';
+
     // 2. Check Firestore users collection by UID
     const userRef = adminDb.collection('users').doc(uid);
     const userDoc = await userRef.get();
 
-    // 3. If user exists -> Preserve existing role & profile
-    if (userDoc.exists) {
-      const existingData = userDoc.data() || {};
-      const existingRole = existingData.role || (decoded.role as string) || 'customer';
+    let authUserRecord: any = null;
+    try {
+      authUserRecord = await adminAuth.getUser(uid);
+    } catch (err) {
+      console.warn('[auth/google] Warning fetching user record:', err);
+    }
 
-      // Update non-sensitive tracking info without modifying role or existing profile
+    const existingData = userDoc.exists ? (userDoc.data() || {}) : null;
+    const existingRole = existingData?.role || authUserRecord?.customClaims?.role || null;
+
+    // Determine authoritative role:
+    // - If existing user is 'admin' or token is 'admin' -> 'admin'
+    // - If signing in through Staff portal -> 'staff'
+    // - If signing in through Customer portal -> 'customer'
+    let resolvedRole: string;
+    if (existingRole === 'admin' || decoded.role === 'admin') {
+      resolvedRole = 'admin';
+    } else if (portal === 'staff') {
+      resolvedRole = 'staff';
+    } else {
+      resolvedRole = 'customer';
+    }
+
+    const now = new Date().toISOString();
+
+    if (userDoc.exists) {
       const updatePayload: Record<string, any> = {
-        lastLoginAt: new Date().toISOString(),
+        lastLoginAt: now,
       };
-      if (!existingData.photoURL && photoURL) {
+      if (existingData?.role !== resolvedRole) {
+        updatePayload.role = resolvedRole;
+        updatePayload.updatedAt = now;
+      }
+      if (!existingData?.photoURL && photoURL) {
         updatePayload.photoURL = photoURL;
       }
       await userRef.update(updatePayload);
-
-      // Ensure Firebase Auth custom claims match the authoritative Firestore role
-      try {
-        const authUser = await adminAuth.getUser(uid);
-        if (authUser.customClaims?.role !== existingRole) {
-          await adminAuth.setCustomUserClaims(uid, {
-            ...(authUser.customClaims || {}),
-            role: existingRole,
-          });
-        }
-      } catch (claimErr) {
-        console.warn('[auth/google] Failed to sync custom claims for existing user:', claimErr);
-      }
-
-      return NextResponse.json({
-        _id: uid,
-        name: existingData.name || name,
-        email: existingData.email || email,
-        photoURL: existingData.photoURL || photoURL,
-        role: existingRole,
-        isNewUser: false,
-      });
-    }
-
-    // 4. If user does not exist -> Create with default role 'customer'
-    // Check if auth record already carries a pre-assigned claim (e.g., admin pre-provisioning)
-    let assignedRole = 'customer';
-    try {
-      const authUser = await adminAuth.getUser(uid);
-      if (authUser.customClaims?.role) {
-        assignedRole = authUser.customClaims.role;
-      }
-    } catch (authErr) {
-      console.warn('[auth/google] Could not check existing user record:', authErr);
-    }
-
-    const newProfile = {
-      name,
-      email,
-      photoURL,
-      role: assignedRole,
-      createdAt: new Date().toISOString(),
-      lastLoginAt: new Date().toISOString(),
-    };
-
-    await userRef.set(newProfile);
-
-    // Set custom claim in Firebase Authentication
-    try {
-      await adminAuth.setCustomUserClaims(uid, {
-        role: assignedRole,
-      });
-    } catch (claimErr) {
-      console.warn('[auth/google] Failed to set custom claims for new user:', claimErr);
-    }
-
-    return NextResponse.json(
-      {
-        _id: uid,
+    } else {
+      const newProfile = {
         name,
         email,
         photoURL,
-        role: assignedRole,
-        isNewUser: true,
-      },
-      { status: 201 }
-    );
+        role: resolvedRole,
+        createdAt: now,
+        lastLoginAt: now,
+      };
+      await userRef.set(newProfile);
+    }
+
+    // Ensure Firebase Auth custom claims match the authoritative role
+    try {
+      if (!authUserRecord || authUserRecord.customClaims?.role !== resolvedRole) {
+        await adminAuth.setCustomUserClaims(uid, {
+          ...(authUserRecord?.customClaims || {}),
+          role: resolvedRole,
+        });
+      }
+    } catch (claimErr) {
+      console.warn('[auth/google] Failed to sync custom claims:', claimErr);
+    }
+
+    return NextResponse.json({
+      _id: uid,
+      name: existingData?.name || name,
+      email: existingData?.email || email,
+      photoURL: existingData?.photoURL || photoURL,
+      role: resolvedRole,
+      isNewUser: !userDoc.exists,
+    });
   } catch (error: any) {
     console.error('[auth/google] Error in Google authentication handler:', error);
     if (error.code === 'auth/id-token-expired') {

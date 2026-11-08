@@ -3,7 +3,6 @@
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useCustomer } from '@/context/CustomerContext';
-import { useAuth } from '@/context/AuthContext';
 import { CustomerNav } from '@/components/CustomerNav';
 import { ActiveQueueCard } from '@/components/ActiveQueueCard';
 import { SavedQueueCard } from '@/components/SavedQueueCard';
@@ -16,7 +15,6 @@ import {
 
 export default function CustomerDashboardPage() {
   const router = useRouter();
-  const { user, logout } = useAuth();
   const {
     activeTickets,
     savedQueues,

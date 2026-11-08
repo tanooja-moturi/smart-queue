@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireStaffUser } from '@/lib/authMiddleware';
-import { adminDb } from '@/lib/firebaseAdmin';
+import { verifyQueueAccess } from '@/lib/queueAuth';
 import { QueryDocumentSnapshot } from 'firebase-admin/firestore';
 
-// GET /api/entries/queue/:queueId — protected, staff-only
+export const dynamic = 'force-dynamic';
+
+// GET /api/entries/queue/:queueId — protected, staff-only (ownerId check enforced)
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ queueId: string }> }
@@ -15,19 +17,12 @@ export async function GET(
     }
 
     const { queueId } = await params;
-    const queueRef = adminDb.collection('queues').doc(queueId);
-    const queueDoc = await queueRef.get();
-
-    if (!queueDoc.exists) {
-      return NextResponse.json({ message: 'Queue not found' }, { status: 404 });
+    const access = await verifyQueueAccess(queueId, user);
+    if (!access.authorized || !access.queueRef) {
+      return NextResponse.json({ message: access.message || 'Unauthorized' }, { status: access.status });
     }
 
-    const queueData = queueDoc.data();
-    if (queueData?.userId !== user._id) {
-      return NextResponse.json({ message: 'Unauthorized' }, { status: 403 });
-    }
-
-    const entriesSnapshot = await queueRef.collection('entries').get();
+    const entriesSnapshot = await access.queueRef.collection('entries').get();
 
     const mappedEntries = entriesSnapshot.docs.map((doc: QueryDocumentSnapshot) => {
       const entry = doc.data();

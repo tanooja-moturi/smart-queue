@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthUser } from '@/lib/authMiddleware';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET(req: NextRequest) {
   try {
     const { user, error, status } = await getAuthUser(req);
@@ -13,6 +15,7 @@ export async function GET(req: NextRequest) {
       _id: user._id,
       name: user.name,
       email: user.email,
+      phoneNumber: user.phoneNumber,
       role: user.role,
       photoURL: user.photoURL,
     });

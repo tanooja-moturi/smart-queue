@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireStaffUser } from '@/lib/authMiddleware';
-import { adminDb } from '@/lib/firebaseAdmin';
+import { verifyQueueAccess } from '@/lib/queueAuth';
 
 /**
  * PATCH /api/queues/:id/settings
  * Toggle isOpen and/or remoteJoiningEnabled for a queue.
- * Staff-only — only the queue owner may update settings.
+ * Staff-only — only the queue owner (ownerId) may update settings.
  *
  * Body: { isOpen?: boolean, remoteJoiningEnabled?: boolean }
  */
@@ -27,21 +27,16 @@ export async function PATCH(
       return NextResponse.json({ message: 'At least one setting (isOpen, remoteJoiningEnabled) must be provided' }, { status: 400 });
     }
 
-    const queueRef = adminDb.collection('queues').doc(id);
-    const queueDoc = await queueRef.get();
-
-    if (!queueDoc.exists) {
-      return NextResponse.json({ message: 'Queue not found' }, { status: 404 });
-    }
-    if (queueDoc.data()?.userId !== user._id) {
-      return NextResponse.json({ message: 'Unauthorized — you do not own this queue' }, { status: 403 });
+    const access = await verifyQueueAccess(id, user);
+    if (!access.authorized || !access.queueRef) {
+      return NextResponse.json({ message: access.message || 'Unauthorized' }, { status: access.status });
     }
 
     const updates: Record<string, boolean> = {};
     if (typeof isOpen === 'boolean') updates.isOpen = isOpen;
     if (typeof remoteJoiningEnabled === 'boolean') updates.remoteJoiningEnabled = remoteJoiningEnabled;
 
-    await queueRef.update(updates);
+    await access.queueRef.update(updates);
 
     return NextResponse.json({ _id: id, ...updates, message: 'Queue settings updated' });
   } catch (error: any) {
