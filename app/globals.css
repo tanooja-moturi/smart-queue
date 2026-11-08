@@ -53,3 +53,23 @@ h1, h2, h3, h4, h5, h6 {
 .animate-pulse-ring {
   animation: pulse-ring 2s infinite;
 }
+
+/* QR code container rules: prevent dark-mode inversion and subpixel path collapse on mobile */
+.qr-code-wrapper {
+  color-scheme: light !important;
+  background-color: #ffffff !important;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+.qr-code-wrapper svg,
+.qr-code-wrapper canvas {
+  color-scheme: light !important;
+  display: block !important;
+  max-width: 100% !important;
+  height: auto !important;
+}
+
+.qr-code-wrapper svg path {
+  shape-rendering: geometricPrecision !important;
+}

@@ -305,8 +305,17 @@ export default function DashboardPage() {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const getJoinUrl = (code: string) => {
-    return `${window.location.origin}/join/${code}`;
+  const [origin, setOrigin] = useState('');
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      setOrigin(window.location.origin);
+    }
+  }, []);
+
+  const getJoinUrl = (code?: string) => {
+    if (!code) return '';
+    const base = origin || (typeof window !== 'undefined' ? window.location.origin : '');
+    return base ? `${base}/join/${code}` : `/join/${code}`;
   };
 
   // Separate active vs historical entries
@@ -541,13 +550,30 @@ export default function DashboardPage() {
                     </span>
                   </div>
 
-                  <div className="bg-white p-4 rounded-2xl shadow-inner inline-block relative border border-white/10">
-                    <QRCodeSVG 
-                      value={getJoinUrl(selectedQueue.queueCode)} 
-                      size={145}
-                      level="H"
-                      includeMargin={false}
-                    />
+                  <div
+                    className="qr-code-wrapper bg-white p-4 rounded-2xl shadow-inner inline-flex items-center justify-center relative border border-white/10"
+                    style={{ colorScheme: 'light' }}
+                  >
+                    {selectedQueue.queueCode ? (
+                      <QRCodeSVG 
+                        value={getJoinUrl(selectedQueue.queueCode)} 
+                        size={160}
+                        level="Q"
+                        bgColor="#FFFFFF"
+                        fgColor="#000000"
+                        includeMargin={false}
+                        style={{
+                          display: 'block',
+                          maxWidth: '100%',
+                          height: 'auto',
+                          shapeRendering: 'geometricPrecision',
+                        }}
+                      />
+                    ) : (
+                      <div className="w-[160px] h-[160px] flex items-center justify-center text-gray-400 text-xs font-mono">
+                        Loading QR...
+                      </div>
+                    )}
                   </div>
                   <div className="w-full space-y-2">
                     <span className="text-gray-500 text-xs block truncate" title={getJoinUrl(selectedQueue.queueCode)}>
